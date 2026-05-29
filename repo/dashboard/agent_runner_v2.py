@@ -188,8 +188,8 @@ def run_analysis(symbol: str, trade_date: str, run_id: int, past_context: str) -
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"]    = "deepseek"
     config["backend_url"]     = "https://api.deepseek.com"
-    config["deep_think_llm"]  = "deepseek-v4-flash"
-    config["quick_think_llm"] = "deepseek-v4-flash"
+    config["deep_think_llm"]  = "deepseek-chat"
+    config["quick_think_llm"] = "deepseek-chat"
     config["max_debate_rounds"]   = 1
     config["checkpoint_enabled"]  = True
     config["online_tools"]        = True
