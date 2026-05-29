@@ -14,7 +14,10 @@ from pathlib import Path
 
 sys.path.insert(0, "/opt/TraceTradeLab/tradingagents-src")
 from dotenv import load_dotenv
-load_dotenv("/opt/TraceTradeLab/tradingagents-src/.env")
+# Load .env từ BASE dir trước, fallback về tradingagents-src/.env
+_base = Path("/opt/TraceTradeLab")
+load_dotenv(_base / ".env", override=False)
+load_dotenv(_base / "tradingagents-src" / ".env", override=False)
 
 sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
 from db_v2 import (
