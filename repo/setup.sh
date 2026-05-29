@@ -98,9 +98,8 @@ echo "[5/6] Tạo Python venv + cài packages..."
 python3 -m venv $VENV
 $PIP install --upgrade pip -q
 $PIP install -r $REPO_DIR/requirements.txt -q
-if [ -f "$BASE/tradingagents-src/requirements.txt" ]; then
-    $PIP install -r $BASE/tradingagents-src/requirements.txt -q
-fi
+# Cài TradingAgents dưới dạng editable package (bỏ qua requirements.txt có ".")
+$PIP install -e $BASE/tradingagents-src/ -q
 echo "✓ venv: $VENV"
 
 # ── 6. Khởi tạo database ─────────────────────────────────────────
