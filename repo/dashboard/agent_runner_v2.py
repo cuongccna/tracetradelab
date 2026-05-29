@@ -13,11 +13,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, "/opt/TraceTradeLab/tradingagents-src")
-from dotenv import load_dotenv
-# Load .env từ BASE dir trước, fallback về tradingagents-src/.env
-_base = Path("/opt/TraceTradeLab")
-load_dotenv(_base / ".env", override=False)
-load_dotenv(_base / "tradingagents-src" / ".env", override=False)
+
+# ── Load API keys từ .env — phải chạy TRƯỚC khi import TradingAgents ──
+import os as _os
+from pathlib import Path as _Path
+
+_ENV_FILE = _Path("/opt/TraceTradeLab/.env")
+if _ENV_FILE.exists():
+    for _line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            _os.environ.setdefault(_k.strip(), _v.strip())
+
+# Verify key loaded
+if not _os.environ.get("DEEPSEEK_API_KEY"):
+    raise RuntimeError(f"DEEPSEEK_API_KEY không tìm thấy trong {_ENV_FILE}")
 
 sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
 from db_v2 import (
