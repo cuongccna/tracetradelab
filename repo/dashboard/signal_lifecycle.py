@@ -13,10 +13,21 @@ signal_status lifecycle:
 Path: /opt/TraceTradeLab/dashboard/signal_lifecycle.py
 """
 
-import sys, logging, httpx
+import os, sys, logging, httpx
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
-sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+FREQTRADE_CONFIG_PATH = Path(
+    os.getenv("FREQTRADE_CONFIG_PATH", str(TRACE_ROOT / "freqtrade/user_data/config.json"))
+)
+FREQTRADE_ENV_PATH = Path(
+    os.getenv("FREQTRADE_ENV_PATH", str(TRACE_ROOT / "freqtrade/.env"))
+)
+
+sys.path.insert(0, str(DASHBOARD_DIR))
 
 log = logging.getLogger(__name__)
 
@@ -24,13 +35,11 @@ def _load_ft_pass() -> tuple[str, str, str]:
     """Read Freqtrade credentials. Falls back to freqtrade/.env if config.json
     has 'overridden_by_environment' as password."""
     import json as _json
-    from pathlib import Path as _Path
     _url = "http://127.0.0.1:8080/api/v1"
     _user = "admin"
     _pass = ""
     try:
-        cfg_path = _Path("/opt/TraceTradeLab/freqtrade/user_data/config.json")
-        with open(cfg_path) as _f:
+        with open(FREQTRADE_CONFIG_PATH) as _f:
             _cfg = _json.load(_f)
         _api = _cfg.get("api_server", {})
         _url = f"http://127.0.0.1:{_api.get('listen_port', 8080)}/api/v1"
@@ -40,8 +49,7 @@ def _load_ft_pass() -> tuple[str, str, str]:
         log.warning(f"Cannot load FT config.json: {_e}")
     if not _pass or _pass == "overridden_by_environment":
         try:
-            env_path = _Path("/opt/TraceTradeLab/freqtrade/.env")
-            for line in env_path.read_text().splitlines():
+            for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
                     _pass = line.split("=", 1)[1].strip()
                     break
@@ -59,6 +67,7 @@ class RejectionReason:
     EXPIRED         = "REJECTED_EXPIRED"
     INVALID         = "REJECTED_INVALID_FORMAT"
     OPEN_TRADE      = "REJECTED_EXISTING_OPEN_TRADE"
+    NO_OPEN_TRADE   = "REJECTED_NO_OPEN_TRADE"
     FT_OFFLINE      = "REJECTED_BOT_OFFLINE"
 
 
@@ -75,6 +84,23 @@ def ft_get(path: str) -> dict | list | None:
         return None
 
 
+def freqtrade_action(action: str) -> str:
+    """Map TradingAgents decisions to the long-only Freqtrade bridge action."""
+    return {"SELL": "EXIT"}.get((action or "").upper(), (action or "").upper())
+
+
+def _parse_dt(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        dt = datetime.fromisoformat(str(value).replace(" ", "T").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def validate_signal(signal: dict) -> tuple[bool, str]:
     """
     Kiểm tra signal có hợp lệ không trước khi gửi cho Freqtrade.
@@ -87,13 +113,15 @@ def validate_signal(signal: dict) -> tuple[bool, str]:
         return False, RejectionReason.LOW_CONFIDENCE
 
     # Action check
-    if signal.get("action") not in ("BUY", "SELL", "EXIT"):
+    if freqtrade_action(signal.get("action")) not in ("BUY", "EXIT"):
         return False, RejectionReason.INVALID
 
     # Expiry check
     if signal.get("expires_at"):
         try:
-            exp = datetime.fromisoformat(signal["expires_at"])
+            exp = _parse_dt(signal["expires_at"])
+            if not exp:
+                return False, RejectionReason.EXPIRED
             if datetime.now(timezone.utc) > exp:
                 return False, RejectionReason.EXPIRED
         except Exception:
@@ -112,13 +140,17 @@ def check_freqtrade_acceptance(signal: dict) -> tuple[str, str | None]:
     if not bot_status:
         return RejectionReason.FT_OFFLINE, "Freqtrade bot offline or unreachable"
 
-    # Có open trade cùng pair không?
+    # BUY opens a long. SELL/EXIT closes an existing long in the Freqtrade bridge.
     open_trades = ft_get("/status")
     if isinstance(open_trades, list):
         pair = signal.get("symbol", "").replace("/", "/")
-        for trade in open_trades:
-            if trade.get("pair") == pair:
+        has_open_trade = any(trade.get("pair") == pair for trade in open_trades)
+        action = freqtrade_action(signal.get("action"))
+        if action == "BUY":
+            if has_open_trade:
                 return RejectionReason.OPEN_TRADE, f"Existing open trade for {pair}"
+        elif action == "EXIT" and not has_open_trade:
+            return RejectionReason.NO_OPEN_TRADE, f"No open trade to exit for {pair}"
 
     # Signal được chấp nhận về nguyên tắc
     return "ACCEPTED", None
@@ -128,22 +160,32 @@ def match_signal_to_ft_trade(signal: dict, ft_trades: list) -> dict | None:
     """
     Match signal với Freqtrade trade dựa trên timing và pair.
     """
-    sig_time = datetime.fromisoformat(signal["created_at"])
+    sig_time = _parse_dt(signal["created_at"])
+    if not sig_time:
+        return None
     pair = signal.get("symbol", "").replace("/", "/")
+    action = freqtrade_action(signal.get("action"))
 
     candidates = []
     for trade in ft_trades:
         if trade.get("pair") != pair:
             continue
-        open_str = trade.get("open_date") or ""
-        try:
-            if isinstance(open_str, (int, float)):
-                t_open = datetime.fromtimestamp(open_str / 1000, tz=timezone.utc)
-            else:
-                t_open = datetime.fromisoformat(open_str.replace("Z", "+00:00"))
-        except Exception:
+        if action == "EXIT":
+            close_time = _parse_dt(trade.get("close_date") or trade.get("close_date_utc"))
+            if close_time and not trade.get("is_open", True):
+                diff = (close_time - sig_time).total_seconds()
+                if 0 <= diff <= 7200:
+                    candidates.append((diff, trade))
+            elif trade.get("is_open", True):
+                open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+                if not open_time or open_time <= sig_time:
+                    candidates.append((0, trade))
             continue
-        diff = (t_open - sig_time).total_seconds()
+
+        open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+        if not open_time:
+            continue
+        diff = (open_time - sig_time).total_seconds()
         if 0 <= diff <= 7200:
             candidates.append((diff, trade))
 
@@ -245,7 +287,7 @@ def sync_all_pending_signals():
                    s.created_at, s.expires_at, s.signal_status
             FROM signals s
             LEFT JOIN executions e ON e.signal_id = s.id
-            WHERE e.id IS NULL AND s.action IN ('BUY','SELL')
+            WHERE e.id IS NULL AND s.action IN ('BUY','SELL','EXIT')
             ORDER BY s.created_at DESC LIMIT 100
         """).fetchall()
         conn.close()

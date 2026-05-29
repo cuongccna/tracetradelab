@@ -6,7 +6,7 @@ Path: /opt/TraceTradeLab/dashboard/api_v2.py
 Chạy: uvicorn api_v2:app --host 0.0.0.0 --port 8888
 """
 
-import asyncio, json, logging, subprocess, shlex
+import asyncio, json, logging, os, subprocess, shlex
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,8 +16,32 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPExceptio
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import sys
-sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
+
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+LOG_DIR = Path(os.getenv("TRACE_LOG_DIR", str(TRACE_ROOT / "logs")))
+VENV_PYTHON = os.getenv("TRACE_VENV_PYTHON", str(TRACE_ROOT / ".venv/bin/python"))
+FREQTRADE_CONFIG_PATH = Path(
+    os.getenv("FREQTRADE_CONFIG_PATH", str(TRACE_ROOT / "freqtrade/user_data/config.json"))
+)
+FREQTRADE_ENV_PATH = Path(
+    os.getenv("FREQTRADE_ENV_PATH", str(TRACE_ROOT / "freqtrade/.env"))
+)
+FREQTRADE_COMPOSE_FILE = Path(
+    os.getenv("FREQTRADE_COMPOSE_FILE", str(TRACE_ROOT / "freqtrade/docker-compose.yml"))
+)
+FREQTRADE_SERVICE = os.getenv("FREQTRADE_SERVICE", "freqtrade")
+FREQTRADE_UI_URL = os.getenv("FREQTRADE_UI_URL", "http://127.0.0.1:8080")
+VALID_TIMEFRAMES = (
+    "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d",
+)
+
+sys.path.insert(0, str(DASHBOARD_DIR))
 
 from db_v2 import (
     init_db, get_recent_runs, get_run_messages, get_signal_history,
@@ -61,8 +85,7 @@ def _load_ft_pass() -> tuple[str, str, str]:
     _user = "admin"
     _pass = ""
     try:
-        cfg_path = Path("/opt/TraceTradeLab/freqtrade/user_data/config.json")
-        with open(cfg_path) as _f:
+        with open(FREQTRADE_CONFIG_PATH) as _f:
             _cfg = _json.load(_f)
         _api = _cfg.get("api_server", {})
         _url = f"http://127.0.0.1:{_api.get('listen_port', 8080)}/api/v1"
@@ -73,8 +96,7 @@ def _load_ft_pass() -> tuple[str, str, str]:
     # If password is a placeholder, read from freqtrade .env
     if not _pass or _pass == "overridden_by_environment":
         try:
-            env_path = Path("/opt/TraceTradeLab/freqtrade/.env")
-            for line in env_path.read_text().splitlines():
+            for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
                     _pass = line.split("=", 1)[1].strip()
                     break
@@ -83,11 +105,13 @@ def _load_ft_pass() -> tuple[str, str, str]:
     return _url, _user, _pass
 
 FREQTRADE_URL, FREQTRADE_USER, FREQTRADE_PASS = _load_ft_pass()
-VENV_PYTHON    = "/opt/TraceTradeLab/.venv/bin/python"
-DASHBOARD_DIR  = "/opt/TraceTradeLab/dashboard"
 
 app = FastAPI(title="TraceTrader Lab API v2", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+class FreqtradeRestartRequest(BaseModel):
+    timeframe: str
 
 
 # ─── WebSocket Manager ────────────────────────────────────────────
@@ -255,7 +279,7 @@ async def get_run(run_id: int):
 async def get_signals(symbol: Optional[str] = None, limit: int = Query(50, le=200)):
     return get_signal_history(symbol, limit)
 
-@app.get("/api/signals/latest/{symbol}")
+@app.get("/api/signals/latest/{symbol:path}")
 async def latest_signal(symbol: str):
     symbol = symbol.replace("%2F", "/")
     sig = get_latest_valid_signal(symbol)
@@ -343,6 +367,61 @@ async def _ft(path: str) -> dict:
         r.raise_for_status()
         return r.json()
 
+def _load_freqtrade_config() -> dict:
+    if not FREQTRADE_CONFIG_PATH.exists():
+        raise HTTPException(404, f"Freqtrade config not found: {FREQTRADE_CONFIG_PATH}")
+    try:
+        return json.loads(FREQTRADE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, f"Invalid Freqtrade config JSON: {exc}") from exc
+
+def _write_freqtrade_config(config: dict) -> str:
+    FREQTRADE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    backup = FREQTRADE_CONFIG_PATH.with_suffix(
+        FREQTRADE_CONFIG_PATH.suffix + f".bak.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    )
+    if FREQTRADE_CONFIG_PATH.exists():
+        backup.write_text(FREQTRADE_CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    tmp = FREQTRADE_CONFIG_PATH.with_suffix(FREQTRADE_CONFIG_PATH.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(FREQTRADE_CONFIG_PATH)
+    return str(backup)
+
+def _restart_freqtrade_container() -> dict:
+    if not FREQTRADE_COMPOSE_FILE.exists():
+        raise HTTPException(500, f"Docker compose file not found: {FREQTRADE_COMPOSE_FILE}")
+    cmd = ["docker", "compose", "-f", str(FREQTRADE_COMPOSE_FILE), "restart", FREQTRADE_SERVICE]
+    result = subprocess.run(
+        cmd,
+        cwd=str(FREQTRADE_COMPOSE_FILE.parent),
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            500,
+            {
+                "error": "Freqtrade restart failed",
+                "cmd": " ".join(cmd),
+                "stdout": result.stdout[-2000:],
+                "stderr": result.stderr[-2000:],
+            },
+        )
+    return {
+        "cmd": " ".join(cmd),
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+
+async def _freqtrade_live_config() -> dict:
+    try:
+        return await _ft("/show_config")
+    except Exception:
+        return {}
+
 @app.get("/api/freqtrade/status")
 async def ft_status():
     try: return await _ft("/status")
@@ -368,6 +447,52 @@ async def ft_daily(days: int = Query(30)):
     try: return await _ft(f"/daily?timescale={days}")
     except: return {"error": "unavailable"}
 
+@app.get("/api/freqtrade/config")
+async def ft_config():
+    local = _load_freqtrade_config()
+    live = await _freqtrade_live_config()
+    api = local.get("api_server", {})
+    return {
+        "timeframe": local.get("timeframe", "1h"),
+        "dry_run": bool(local.get("dry_run", True)),
+        "live_timeframe": live.get("timeframe"),
+        "live_dry_run": live.get("dry_run"),
+        "state": live.get("state"),
+        "strategy": live.get("strategy"),
+        "available_timeframes": list(VALID_TIMEFRAMES),
+        "config_path": str(FREQTRADE_CONFIG_PATH),
+        "compose_file": str(FREQTRADE_COMPOSE_FILE),
+        "service": FREQTRADE_SERVICE,
+        "ui_url": FREQTRADE_UI_URL,
+        "api_url": FREQTRADE_URL,
+        "api_user": api.get("username", FREQTRADE_USER),
+    }
+
+@app.post("/api/freqtrade/config/restart")
+async def ft_config_restart(payload: FreqtradeRestartRequest):
+    timeframe = payload.timeframe.strip()
+    if timeframe not in VALID_TIMEFRAMES:
+        raise HTTPException(400, f"Unsupported timeframe: {timeframe}")
+
+    config = _load_freqtrade_config()
+    old_timeframe = config.get("timeframe")
+    config["timeframe"] = timeframe
+    config["dry_run"] = True
+    backup = _write_freqtrade_config(config)
+    restart = _restart_freqtrade_container()
+    live = await _freqtrade_live_config()
+    return {
+        "status": "restarted",
+        "old_timeframe": old_timeframe,
+        "timeframe": timeframe,
+        "dry_run": True,
+        "backup": backup,
+        "restart": restart,
+        "live_timeframe": live.get("timeframe"),
+        "live_dry_run": live.get("dry_run"),
+        "state": live.get("state"),
+    }
+
 
 # ─── Accuracy / Memory ───────────────────────────────────────────
 
@@ -377,7 +502,7 @@ async def accuracy(symbol: Optional[str] = None):
         return {"error": "feedback_collector not available"}
     return get_accuracy_stats(symbol)
 
-@app.get("/api/memory/{symbol}")
+@app.get("/api/memory/{symbol:path}")
 async def memory(symbol: str):
     symbol = symbol.replace("%2F", "/")
     if not FEEDBACK_OK:
@@ -388,6 +513,7 @@ async def memory(symbol: str):
 # ─── Action triggers ──────────────────────────────────────────────
 
 def _bg_run(cmd: str, log_file: str):
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     subprocess.Popen(
         shlex.split(cmd),
         stdout=open(log_file, "a"),
@@ -398,7 +524,7 @@ def _bg_run(cmd: str, log_file: str):
 @app.post("/api/trigger-run")
 async def trigger_run(background_tasks: BackgroundTasks, symbol: str = "BTC/USDT"):
     cmd = f"{VENV_PYTHON} {DASHBOARD_DIR}/agent_runner_v2.py --symbol '{symbol}'"
-    background_tasks.add_task(_bg_run, cmd, "/opt/TraceTradeLab/logs/manual_run.log")
+    background_tasks.add_task(_bg_run, cmd, str(LOG_DIR / "manual_run.log"))
     return {"status": "triggered", "symbol": symbol}
 
 @app.post("/api/trigger-feedback")
@@ -426,12 +552,12 @@ async def trigger_backfill(background_tasks: BackgroundTasks):
 # ─── Static files ─────────────────────────────────────────────────
 
 STATIC = Path(DASHBOARD_DIR) / "static"
-STATIC.mkdir(exist_ok=True)
+STATIC.mkdir(parents=True, exist_ok=True)
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     idx = STATIC / "index.html"
-    return HTMLResponse(idx.read_text() if idx.exists() else "<h1>Place index.html in /opt/TraceTradeLab/dashboard/static/</h1>")
+    return HTMLResponse(idx.read_text() if idx.exists() else f"<h1>Place index.html in {STATIC}</h1>")
 
 if STATIC.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

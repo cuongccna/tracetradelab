@@ -11,12 +11,22 @@ Path: /opt/TraceTradeLab/dashboard/feedback_collector.py
 Cron: python feedback_collector.py  (mỗi 30 phút)
 """
 
-import sys, json, logging, sqlite3
+import os, sys, json, logging, sqlite3
 import httpx
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
-sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+FREQTRADE_CONFIG_PATH = Path(
+    os.getenv("FREQTRADE_CONFIG_PATH", str(TRACE_ROOT / "freqtrade/user_data/config.json"))
+)
+FREQTRADE_ENV_PATH = Path(
+    os.getenv("FREQTRADE_ENV_PATH", str(TRACE_ROOT / "freqtrade/.env"))
+)
+
+sys.path.insert(0, str(DASHBOARD_DIR))
 
 log = logging.getLogger(__name__)
 
@@ -31,9 +41,8 @@ def _load_ft_config() -> tuple[str, str, str]:
     _url = "http://127.0.0.1:8080/api/v1"
     _user = "admin"
     _pass = ""
-    config_path = Path("/opt/TraceTradeLab/freqtrade/user_data/config.json")
     try:
-        with open(config_path) as f:
+        with open(FREQTRADE_CONFIG_PATH) as f:
             cfg = json.load(f)
         api = cfg.get("api_server", {})
         _url  = f"http://127.0.0.1:{api.get('listen_port', 8080)}/api/v1"
@@ -43,8 +52,7 @@ def _load_ft_config() -> tuple[str, str, str]:
         log.warning(f"Cannot read FT config.json: {e}")
     if not _pass or _pass == "overridden_by_environment":
         try:
-            env_path = Path("/opt/TraceTradeLab/freqtrade/.env")
-            for line in env_path.read_text().splitlines():
+            for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
                     _pass = line.split("=", 1)[1].strip()
                     break
@@ -95,7 +103,7 @@ def ensure_feedback_schema():
 #  ACCURACY STATS
 # ═══════════════════════════════════════════════════════════════════
 
-def get_accuracy_stats() -> dict:
+def get_accuracy_stats(symbol: str | None = None) -> dict:
     """
     Return aggregate stats from signal_outcomes.
     Always returns a dict (never raises).
@@ -104,14 +112,19 @@ def get_accuracy_stats() -> dict:
     try:
         from db_v2 import DB_PATH, get_conn
         with get_conn() as conn:
-            row = conn.execute("""
+            params = []
+            where = "WHERE outcome_correct IS NOT NULL"
+            if symbol:
+                where += " AND symbol = ?"
+                params.append(symbol)
+            row = conn.execute(f"""
                 SELECT COUNT(*) as total,
                        SUM(outcome_correct) as wins,
                        AVG(profit_pct) as avg_pnl,
                        SUM(sl_triggered) as sl_count
                 FROM signal_outcomes
-                WHERE outcome_correct IS NOT NULL
-            """).fetchone()
+                {where}
+            """, params).fetchone()
         total = row["total"] or 0
         wins  = int(row["wins"] or 0)
         return {
@@ -209,7 +222,7 @@ def _parse_ft_dt(dt_str: str) -> datetime | None:
 
 def _find_matching_signal(pair: str, trade_open_dt: datetime) -> dict | None:
     """
-    Look for a BUY/SELL signal in DB that:
+    Look for the BUY entry signal in DB that:
       - matches pair/symbol
       - was created 0–2 hours before the FT trade opened
       - has no signal_outcome recorded yet
@@ -229,7 +242,7 @@ def _find_matching_signal(pair: str, trade_open_dt: datetime) -> dict | None:
                 FROM signals s
                 LEFT JOIN signal_outcomes so ON so.signal_id = s.id
                 WHERE s.symbol = ?
-                  AND s.action IN ('BUY','SELL')
+                  AND s.action = 'BUY'
                   AND s.created_at BETWEEN ? AND ?
                   AND so.id IS NULL
                 ORDER BY s.created_at DESC LIMIT 1
@@ -272,6 +285,9 @@ def _record_outcome(signal_row: dict, ft_trade: dict):
     """
     try:
         ft_trade_id = int(ft_trade.get("trade_id", 0))
+        if ft_trade_id <= 0:
+            log.debug("Skipping closed trade without a valid trade_id")
+            return
         if _outcome_already_recorded(ft_trade_id):
             return
 
@@ -295,8 +311,8 @@ def _record_outcome(signal_row: dict, ft_trade: dict):
         action = signal_row.get("action", "BUY")
         if action == "BUY":
             outcome_correct = 1 if profit_pct > 0 else 0
-        elif action == "SELL":
-            outcome_correct = 1 if profit_pct < 0 else 0
+        elif action in ("SELL", "EXIT"):
+            outcome_correct = 1 if profit_pct >= 0 else 0
         else:
             outcome_correct = None
 
@@ -305,8 +321,8 @@ def _record_outcome(signal_row: dict, ft_trade: dict):
 
         from db_v2 import get_conn
         with get_conn() as conn:
-            conn.execute("""
-                INSERT INTO signal_outcomes
+            cur = conn.execute("""
+                INSERT OR IGNORE INTO signal_outcomes
                   (signal_id, execution_id, ft_trade_id, symbol, signal_action,
                    actual_entry, actual_exit, profit_pct, profit_abs,
                    trade_duration, sl_triggered, tp1_triggered,
@@ -319,6 +335,9 @@ def _record_outcome(signal_row: dict, ft_trade: dict):
                 duration_min, sl_triggered, tp_triggered,
                 outcome_correct, close_reason, closed_at, now,
             ))
+            if cur.rowcount == 0:
+                log.debug(f"Outcome already recorded for FT trade #{ft_trade_id}")
+                return
 
         log.info(
             f"Outcome recorded: signal #{signal_row['id']} ↔ FT #{ft_trade_id}"
@@ -363,6 +382,8 @@ def run_feedback_collection():
 
         # Skip if already recorded
         ft_trade_id = int(ft_trade.get("trade_id", 0))
+        if ft_trade_id <= 0:
+            continue
         if _outcome_already_recorded(ft_trade_id):
             continue
 

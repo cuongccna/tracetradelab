@@ -1,11 +1,17 @@
 {
   "$schema": "https://schema.freqtrade.io/schema.json",
-  "max_open_trades": 1,
+  "max_open_trades": 2,
   "stake_currency": "USDT",
-  "stake_amount": 100,
+  "stake_amount": 50,
   "tradable_balance_ratio": 0.99,
   "fiat_display_currency": "USD",
-  "timeframe": "1h",
+  "timeframe": "4h",
+  "minimal_roi": {
+    "0": 0.04,
+    "720": 0.025,
+    "1440": 0.015
+  },
+  "stoploss": -0.025,
   "dry_run": true,
   "dry_run_wallet": 1000,
   "cancel_open_orders_on_exit": true,

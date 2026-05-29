@@ -155,6 +155,14 @@ tr:hover td{background:var(--s2)}
 .bucket-fill-pos{height:14px;background:var(--buy);border-radius:2px;transition:width .5s}
 .bucket-fill-neg{height:14px;background:var(--sell);border-radius:2px;transition:width .5s}
 .bucket-val{font-size:10px;min-width:50px;text-align:right}
+.control-row{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin-bottom:10px}
+.control-label{font-size:10px;color:var(--mu2);text-transform:uppercase;letter-spacing:.5px}
+.select,.input{width:100%;height:30px;border:1px solid var(--bd);border-radius:var(--r);background:var(--s1);color:var(--tx);font-family:var(--font);font-size:11px;padding:0 9px}
+.toggle-line{display:flex;align-items:center;gap:8px;height:30px;color:var(--tx);font-size:11px}
+.toggle-line input{accent-color:var(--buy)}
+.status-list{font-size:10px;line-height:2;color:var(--mu)}
+.status-list strong{color:var(--tx)}
+.link-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 </style>
 </head>
 <body>
@@ -194,6 +202,7 @@ tr:hover td{background:var(--s2)}
   <div class="tab" onclick="go(5)">Thị trường</div>
   <div class="tab" onclick="go(6)">Học phản hồi</div>
   <div class="tab" onclick="go(7)">Lịch sử chạy</div>
+  <div class="tab" onclick="go(8)">Freqtrade</div>
 </div>
 
 <!-- CONTENT -->
@@ -417,6 +426,69 @@ tr:hover td{background:var(--s2)}
     </div>
   </div>
 
+  <!-- Tab 8: Freqtrade Control -->
+  <div id="t8" style="display:none">
+    <div class="two-pane">
+      <div>
+        <div class="section">
+          <div class="sh">Cấu hình chạy Freqtrade</div>
+          <div class="card">
+            <div class="control-row">
+              <div class="control-label">Timeframe</div>
+              <select class="select" id="ft-timeframe"></select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">Dry-run</div>
+              <label class="toggle-line">
+                <input type="checkbox" id="ft-dryrun" checked disabled>
+                Luôn bật dry-run khi áp dụng cấu hình từ dashboard
+              </label>
+            </div>
+            <div class="link-row">
+              <button class="btn" onclick="restartFreqtrade()">↻ Restart áp dụng</button>
+              <button class="btn" onclick="loadFreqtrade()">↺ Tải lại trạng thái</button>
+              <button class="btn" onclick="openFreqtradeUI()">↗ Mở Freqtrade UI</button>
+            </div>
+            <div style="font-size:10px;color:var(--mu2);margin-top:10px;line-height:1.8">
+              Restart sẽ backup config, ghi timeframe mới, ép <strong>dry_run=true</strong>, rồi restart container Freqtrade.
+            </div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Trạng thái live</div>
+          <div class="grid3">
+            <div class="card"><div class="cv" id="ft-live-tf">--</div><div class="cl">Timeframe live</div></div>
+            <div class="card"><div class="cv" id="ft-live-dry">--</div><div class="cl">Dry-run live</div></div>
+            <div class="card"><div class="cv" id="ft-state">--</div><div class="cl">Bot state</div></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="sh">Liên kết UI</div>
+          <div class="card status-list">
+            Freqtrade UI native: <strong id="ft-ui-url">--</strong><br>
+            Dashboard custom: <strong id="ft-dashboard-url">--</strong><br>
+            Strategy: <strong id="ft-strategy">--</strong><br>
+            API user: <strong id="ft-api-user">--</strong>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Đường dẫn deploy</div>
+          <div class="card status-list">
+            Config: <strong id="ft-config-path">--</strong><br>
+            Compose: <strong id="ft-compose-file">--</strong><br>
+            Service: <strong id="ft-service">--</strong>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Kết quả restart gần nhất</div>
+          <div id="ft-restart-log" class="card" style="font-size:10px;white-space:pre-wrap;line-height:1.7;color:var(--mu)">Chưa restart trong phiên này.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /content -->
 </div><!-- /root -->
 
@@ -430,7 +502,7 @@ const S = {
   tab: 0, ws: null,
   overview: null, signals: null, execution: null, outcomes: null,
   agents: null, regimes: null, feedback: null,
-  runs: [], selectedRunId: null,
+  runs: [], selectedRunId: null, freqtrade: null,
 };
 
 const $=id=>document.getElementById(id);
@@ -443,19 +515,21 @@ function toast(m,d=3000){const e=$('toast');e.textContent=m;e.classList.add('sho
 setInterval(()=>$('clk').textContent=new Date().toLocaleTimeString('vi-VN'),1000);
 
 // ── Tabs ──────────────────────────────────────────────────────────
-const TABS = ['t0','t1','t2','t3','t4','t5','t6','t7'];
+const TABS = ['t0','t1','t2','t3','t4','t5','t6','t7','t8'];
+const TAB_HASHES = ['overview','signals','execution','outcomes','agents','market','feedback','runs','freqtrade'];
 function go(idx){
   S.tab = idx;
   TABS.forEach((t,i)=>{
     $(t).style.display = i===idx?'':'none';
     document.querySelectorAll('.tab')[i].classList.toggle('active', i===idx);
   });
+  if(TAB_HASHES[idx]) history.replaceState(null, '', '#'+TAB_HASHES[idx]);
   loadTab(idx);
 }
 
 async function loadTab(idx){
   const loaders = [loadOverview, loadSignals, loadExecution, loadOutcomes,
-                   loadAgents, loadRegimes, loadFeedback, loadTraceRuns];
+                   loadAgents, loadRegimes, loadFeedback, loadTraceRuns, loadFreqtrade];
   try{ await loaders[idx](); } catch(e){ console.warn('Tab load:', e); }
 }
 
@@ -909,6 +983,74 @@ function toggleTrace(hdr){
   body.classList.toggle('open');
 }
 
+// ── Tab 8: Freqtrade ──────────────────────────────────────────────
+function publicFreqtradeUrl(url){
+  try{
+    const u = new URL(url);
+    if(['127.0.0.1','0.0.0.0','localhost'].includes(u.hostname) && location.hostname){
+      u.hostname = location.hostname;
+    }
+    return u.toString().replace(/\/$/,'');
+  }catch{
+    return `http://${location.hostname}:8080`;
+  }
+}
+
+async function loadFreqtrade(){
+  const r = await fetch(API+'/api/freqtrade/config');
+  const d = await r.json();
+  S.freqtrade = d;
+  const sel = $('ft-timeframe');
+  if(sel){
+    const opts = d.available_timeframes||['1m','5m','15m','30m','1h','4h','1d'];
+    sel.innerHTML = opts.map(tf=>`<option value="${tf}" ${tf===(d.timeframe||d.live_timeframe)?'selected':''}>${tf}</option>`).join('');
+  }
+  $('ft-dryrun').checked = true;
+  $('ft-live-tf').textContent = d.live_timeframe || d.timeframe || '--';
+  $('ft-live-dry').textContent = d.live_dry_run===true || d.dry_run===true ? 'TRUE' : 'FALSE';
+  $('ft-live-dry').className = 'cv '+((d.live_dry_run===true || d.dry_run===true)?'pos':'neg');
+  $('ft-state').textContent = d.state || '--';
+  $('ft-strategy').textContent = d.strategy || '--';
+  $('ft-api-user').textContent = d.api_user || '--';
+  $('ft-config-path').textContent = d.config_path || '--';
+  $('ft-compose-file').textContent = d.compose_file || '--';
+  $('ft-service').textContent = d.service || '--';
+  const ui = publicFreqtradeUrl(d.ui_url||'http://127.0.0.1:8080');
+  $('ft-ui-url').textContent = ui;
+  $('ft-dashboard-url').textContent = location.origin;
+}
+
+async function restartFreqtrade(){
+  const timeframe = $('ft-timeframe').value;
+  if(!confirm(`Restart Freqtrade với timeframe ${timeframe} và dry_run=true?`)) return;
+  $('ft-restart-log').textContent = `Đang ghi config và restart Freqtrade (${timeframe})...`;
+  try{
+    const r = await fetch(API+'/api/freqtrade/config/restart',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({timeframe})
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail||d));
+    $('ft-restart-log').textContent =
+      `OK: ${d.old_timeframe||'--'} → ${d.timeframe}\n`+
+      `dry_run: ${d.live_dry_run ?? d.dry_run}\n`+
+      `state: ${d.state||'--'}\n`+
+      `backup: ${d.backup}\n`+
+      `${d.restart?.stdout||''}`;
+    toast(`↻ Freqtrade đã restart: ${d.timeframe}`);
+    setTimeout(loadFreqtrade, 3000);
+  }catch(e){
+    $('ft-restart-log').textContent = `Lỗi restart: ${e.message}`;
+    toast('⚠ Restart Freqtrade lỗi', 5000);
+  }
+}
+
+function openFreqtradeUI(){
+  const ui = $('ft-ui-url').textContent || publicFreqtradeUrl(S.freqtrade?.ui_url||'http://127.0.0.1:8080');
+  window.open(ui, '_blank', 'noopener,noreferrer');
+}
+
 // ── Triggers ──────────────────────────────────────────────────────
 async function triggerRun(){
   try{const r=await fetch(API+'/api/trigger-run',{method:'POST'});const d=await r.json();toast(d.status==='triggered'?'▶ Đã kích hoạt AI':'⚠ '+d.error);}catch{toast('⚠ API không phản hồi');}
@@ -920,6 +1062,12 @@ async function triggerFeedback(){
 // ── Init ──────────────────────────────────────────────────────────
 async function init(){
   try{
+    const hashIdx = TAB_HASHES.indexOf(location.hash.replace('#',''));
+    if(hashIdx >= 0) S.tab = hashIdx;
+    TABS.forEach((t,i)=>{
+      $(t).style.display = i===S.tab?'':'none';
+      document.querySelectorAll('.tab')[i].classList.toggle('active', i===S.tab);
+    });
     const r = await fetch(API+'/api/dashboard/overview');
     S.overview = await r.json();
     renderTopKPIs({});

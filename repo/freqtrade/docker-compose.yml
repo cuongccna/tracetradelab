@@ -29,8 +29,8 @@ services:
       # FreqUI tiếng Việt — ghi đè UI mặc định của Docker image
       - "../freqUI/dist:/freqtrade/freqtrade/rpc/api_server/ui/installed:ro"
     ports:
-      # Chỉ bind localhost — dùng reverse proxy nếu cần public
-      - "127.0.0.1:8080:8080"
+      # Mặc định chỉ bind localhost. Đặt FREQTRADE_BIND_HOST=0.0.0.0 nếu VPS đã có firewall/reverse proxy.
+      - "${FREQTRADE_BIND_HOST:-127.0.0.1}:8080:8080"
     command: >
       trade
       --logfile /freqtrade/user_data/logs/freqtrade.log

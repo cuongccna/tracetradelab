@@ -13,12 +13,15 @@ Bổ sung so với db.py:
 Path: /opt/TraceTradeLab/dashboard/db_v2.py
 """
 
-import sqlite3, json
+import os, sqlite3, json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import contextmanager
 
-DB_PATH = Path("/opt/TraceTradeLab/dashboard/tracetrader.db")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+DB_PATH = Path(os.getenv("TRACE_DB_PATH", str(DASHBOARD_DIR / "tracetrader.db")))
 SIGNAL_TTL_MINUTES = 70
 
 @contextmanager
@@ -244,6 +247,11 @@ def init_db():
         ]
         for name, cols in idxs:
             conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {cols}")
+        _safe_create_unique_index(
+            conn,
+            "idx_outcomes_ft_trade_unique",
+            "signal_outcomes(ft_trade_id)",
+        )
 
     print(f"[DB v2] Schema initialized at {DB_PATH}")
 
@@ -254,6 +262,14 @@ def _safe_add_column(conn, table: str, col: str, col_type: str):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+
+def _safe_create_unique_index(conn, name: str, expr: str):
+    """Create a uniqueness guard when existing data allows it."""
+    try:
+        conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {expr}")
+    except sqlite3.IntegrityError as e:
+        print(f"[DB v2] Skipped unique index {name}: existing duplicates ({e})")
 
 
 # ═══════════════════════════════════════════════════════════════════

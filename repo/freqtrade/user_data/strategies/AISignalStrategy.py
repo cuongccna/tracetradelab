@@ -14,7 +14,7 @@ from freqtrade.strategy import IStrategy
 
 log = logging.getLogger(__name__)
 DB_PATH = Path(os.getenv("SIGNAL_DB_PATH", "/bridge/signals.db"))
-MIN_CONFIDENCE = float(os.getenv("TRACE_MIN_CONFIDENCE", "0.62"))
+MIN_CONFIDENCE = float(os.getenv("TRACE_MIN_CONFIDENCE", "0.65"))
 
 
 def _read_signal(symbol: str) -> dict | None:
@@ -52,17 +52,17 @@ class AISignalStrategy(IStrategy):
     """Execute only fresh high-conviction long entries during dry-run."""
 
     INTERFACE_VERSION = 3
-    timeframe = "1h"
+    timeframe = "4h"
     can_short = False
 
-    minimal_roi = {"0": 0.10}
-    stoploss = -0.02
+    minimal_roi = {"0": 0.04, "720": 0.025, "1440": 0.015}
+    stoploss = -0.025
     use_custom_stoploss = True
     trailing_stop = False
     process_only_new_candles = True
     use_exit_signal = True
     exit_profit_only = False
-    startup_candle_count = 0
+    startup_candle_count = 20
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         return dataframe
@@ -75,6 +75,19 @@ class AISignalStrategy(IStrategy):
 
         signal = _read_signal(metadata["pair"])
         if signal and signal["action"] == "BUY" and signal["confidence"] >= MIN_CONFIDENCE:
+            # Filter: dead zone 22:00–01:00 UTC (volume thấp, spread rộng)
+            last_ts = dataframe.index[-1]
+            if hasattr(last_ts, "hour") and last_ts.hour in {22, 23, 0, 1}:
+                log.debug("%s: skipping BUY — dead zone hour %d UTC", metadata["pair"], last_ts.hour)
+                return dataframe
+
+            # Filter: volume bất thường thấp (< 50% trung bình 20 candle)
+            vol_mean = dataframe["volume"].iloc[-20:].mean()
+            if vol_mean > 0 and dataframe["volume"].iloc[-1] < 0.5 * vol_mean:
+                log.debug("%s: skipping BUY — volume too low (ratio %.2f)", metadata["pair"],
+                          dataframe["volume"].iloc[-1] / vol_mean)
+                return dataframe
+
             dataframe.loc[dataframe.index[-1], "enter_long"] = 1
             dataframe.loc[dataframe.index[-1], "enter_tag"] = (
                 f"AI_BUY_{signal['confidence']:.2f}"

@@ -8,29 +8,35 @@ Thay đổi so với v1:
 Path: /opt/TraceTradeLab/dashboard/agent_runner.py
 """
 
-import sys, os, re, json, argparse, logging
+import sys, os, re, json, argparse, logging, fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 
-sys.path.insert(0, "/opt/TraceTradeLab/tradingagents-src")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+TRADINGAGENTS_SRC = Path(
+    os.getenv("TRADINGAGENTS_SRC", str(TRACE_ROOT / "tradingagents-src"))
+)
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+LOG_DIR = Path(os.getenv("TRACE_LOG_DIR", str(TRACE_ROOT / "logs")))
+ENV_FILE = Path(os.getenv("TRACE_ENV_FILE", str(TRACE_ROOT / ".env")))
+AGENT_LOCK_FILE = Path(
+    os.getenv("TRACE_AGENT_LOCK_FILE", str(LOG_DIR / "agent_runner.lock"))
+)
+
+sys.path.insert(0, str(TRADINGAGENTS_SRC))
 
 # ── Load API keys từ .env — phải chạy TRƯỚC khi import TradingAgents ──
 import os as _os
-from pathlib import Path as _Path
 
-_ENV_FILE = _Path("/opt/TraceTradeLab/.env")
-if _ENV_FILE.exists():
-    for _line in _ENV_FILE.read_text(encoding="utf-8").splitlines():
+if ENV_FILE.exists():
+    for _line in ENV_FILE.read_text(encoding="utf-8").splitlines():
         _line = _line.strip()
         if _line and not _line.startswith("#") and "=" in _line:
             _k, _v = _line.split("=", 1)
             _os.environ.setdefault(_k.strip(), _v.strip())
 
-# Verify key loaded
-if not _os.environ.get("DEEPSEEK_API_KEY"):
-    raise RuntimeError(f"DEEPSEEK_API_KEY không tìm thấy trong {_ENV_FILE}")
-
-sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
+sys.path.insert(0, str(DASHBOARD_DIR))
 from db_v2 import (
     init_db, create_run, finish_run, fail_run,
     add_agent_message, write_signal
@@ -70,8 +76,7 @@ try:
 except ImportError:
     FEEDBACK_AVAILABLE = False
 
-LOG_DIR = Path("/opt/TraceTradeLab/logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -103,6 +108,28 @@ CRYPTO_MAP = {
     "BNB/USDT": "BNB", "UNI/USDT": "UNI", "ONDO/USDT": "ONDO",
 }
 MIN_CONFIDENCE = 0.60
+_RUN_LOCK_HANDLE = None
+
+
+def _require_deepseek_key():
+    if not _os.environ.get("DEEPSEEK_API_KEY"):
+        raise RuntimeError(f"DEEPSEEK_API_KEY không tìm thấy trong {ENV_FILE}")
+
+
+def _acquire_run_lock():
+    """Prevent cron/manual/API triggers from writing competing bridge signals."""
+    global _RUN_LOCK_HANDLE
+    AGENT_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(AGENT_LOCK_FILE, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log.warning(f"Another agent_runner is active; skipping this run ({AGENT_LOCK_FILE})")
+        fh.close()
+        sys.exit(0)
+    fh.write(f"pid={os.getpid()} started_at={datetime.now(timezone.utc).isoformat()}\n")
+    fh.flush()
+    _RUN_LOCK_HANDLE = fh
 
 
 def _extract_content(state: dict, node_name: str) -> str | None:
@@ -180,6 +207,7 @@ def _parse_final(raw) -> dict:
 
 
 def run_analysis(symbol: str, trade_date: str, run_id: int, past_context: str) -> dict:
+    _require_deepseek_key()
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -332,6 +360,7 @@ def main():
     parser.add_argument("--date",   default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     parser.add_argument("--skip-feedback", action="store_true", help="Bỏ qua feedback collection")
     args = parser.parse_args()
+    _acquire_run_lock()
 
     init_db()
     if FEEDBACK_AVAILABLE:
@@ -387,7 +416,7 @@ def main():
 
         # ── BƯỚC 3b: Ghi vào signal_bridge/signals.db để Freqtrade đọc ──
         try:
-            sys.path.insert(0, "/opt/TraceTradeLab")
+            sys.path.insert(0, str(TRACE_ROOT))
             from signal_bridge.signal_db import (
                 write_signal as bridge_write,
                 init_db as bridge_init_db,
@@ -436,7 +465,7 @@ def main():
                     "symbol": symbol, "action": signal["action"],
                     "confidence": signal["confidence"],
                     "expires_at": None,  # will be fetched from DB
-                    "created_at": trade_date + "T00:00:00+00:00",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 })
             except Exception as e:
                 log.warning(f"Lifecycle check failed (non-fatal): {e}")
