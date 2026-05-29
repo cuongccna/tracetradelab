@@ -31,13 +31,11 @@ logs/
 *.tmp
 *.swp
 
-# ─── TradingAgents source (installed separately) ────────────────
-tradingagents-src/
-
 # ─── OS files ───────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# ─── TradingAgents data cache (tải về tự động khi chạy) ──────────
+# ─── TradingAgents: chỉ bỏ cache data, build, secrets (giữ toàn bộ source) ──
+tradingagents-src/.env
 tradingagents-src/tradingagents_data/
 tradingagents-src/build/
