@@ -18,6 +18,18 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+# ─── Tự động load .env từ thư mục cha (cho phép cấu hình qua file) ──────────
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _here = Path(__file__).resolve().parent
+    for _p in [_here, _here.parent]:
+        _env = _p / ".env"
+        if _env.exists():
+            _load_dotenv(_env, override=False)
+            break
+except ImportError:
+    pass
+
 # ─────────────────────────────────────────────────────────────
 #  ⚙️  CẤU HÌNH — Điền vào đây (hoặc dùng biến môi trường)
 # ─────────────────────────────────────────────────────────────
@@ -76,7 +88,7 @@ def _get_overview() -> dict:
             SELECT
                 COUNT(*) total_runs,
                 SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) done_runs
-            FROM runs WHERE created_at > datetime('now', '-7 days')
+            FROM agent_runs WHERE created_at > datetime('now', '-7 days')
         """)
         row = cur.fetchone()
         stats = {"runs_7d": row[0] or 0, "done_7d": row[1] or 0}
@@ -85,7 +97,7 @@ def _get_overview() -> dict:
         cur.execute("""
             SELECT COUNT(*), AVG(pnl_pct),
                    SUM(CASE WHEN pnl_pct>0 THEN 1 ELSE 0 END)
-            FROM outcomes
+            FROM signal_outcomes
         """)
         row = cur.fetchone()
         stats["total_outcomes"] = row[0] or 0
