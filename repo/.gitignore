@@ -1,0 +1,43 @@
+# ─── Python cache ───────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# ─── Virtual environment ────────────────────────────────────────
+.venv/
+venv/
+env/
+
+# ─── Secrets & config ───────────────────────────────────────────
+.env
+freqtrade/user_data/config.json
+freqtrade/.env
+
+# ─── Databases (data stays on server) ───────────────────────────
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# ─── Logs ───────────────────────────────────────────────────────
+logs/
+*.log
+
+# ─── Backups & temp ─────────────────────────────────────────────
+*.bak
+*.bak.*
+*.tmp
+*.swp
+
+# ─── TradingAgents source (installed separately) ────────────────
+tradingagents-src/
+
+# ─── OS files ───────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── TradingAgents data cache (tải về tự động khi chạy) ──────────
+tradingagents-src/tradingagents_data/
+tradingagents-src/build/

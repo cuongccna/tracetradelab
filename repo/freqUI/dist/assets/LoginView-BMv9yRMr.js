@@ -1,0 +1,2 @@
+import{N as e,Q as t,d as n,h as r}from"./runtime-core.esm-bundler-Dz8W7G7L.js";import{t as i}from"./BotLogin-8Dolz6Of.js";import{U as a}from"./index-D0kNPN8i.js";import{t as o}from"./DraggableContainer-CFYIB3Yr.js";var s={},c={class:`border max-w-xl mx-auto p-4`};function l(a,s){let l=i,u=o;return e(),n(`div`,c,[r(u,{header:`Đăng nhập bot Freqtrade`},{default:t(()=>[r(l,{ref:`loginForm`},null,512)]),_:1})])}var u=a(s,[[`render`,l]]);export{u as default};
+//# sourceMappingURL=LoginView-BMv9yRMr.js.map

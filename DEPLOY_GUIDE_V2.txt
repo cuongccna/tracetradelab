@@ -1,0 +1,330 @@
+================================================================
+ TRACETRADER LAB — DEPLOY GUIDE V2
+ Research Observability Dashboard — 7 tabs
+================================================================
+
+Thay đổi so với V1:
+  - db_v2.py       → 7 bảng đầy đủ theo spec
+  - api_v2.py      → 9 dashboard endpoints + trace/lineage
+  - index_v2.html  → 7-tab layout hoàn chỉnh
+  - market_regime.py    → Rule-based regime classifier
+  - agent_bias_extractor.py → Parse bias/confidence/recommendation
+  - signal_lifecycle.py → Track signal status CREATED→CLOSED
+
+================================================================
+ CẤU TRÚC FILE CUỐI CÙNG
+================================================================
+
+/opt/tracetrader/dashboard/
+├── db_v2.py                 ← THAY db.py
+├── agent_runner_v2.py       ← THAY agent_runner.py
+├── api_v2.py                ← THAY api.py
+├── feedback_collector.py    ← Giữ nguyên (update FREQTRADE_PASS)
+├── market_regime.py         ← MỚI
+├── agent_bias_extractor.py  ← MỚI
+├── signal_lifecycle.py      ← MỚI (update FREQTRADE_PASS)
+└── static/
+    └── index.html           ← Thay bằng index_v2.html
+
+================================================================
+ BƯỚC 1 — COPY FILES
+================================================================
+
+# Backup bản cũ
+cp /opt/tracetrader/dashboard/db.py /opt/tracetrader/dashboard/db.py.v1.bak
+cp /opt/tracetrader/dashboard/api.py /opt/tracetrader/dashboard/api.py.v1.bak
+
+# Copy files mới (paste nội dung từng file)
+nano /opt/tracetrader/dashboard/db_v2.py
+nano /opt/tracetrader/dashboard/api_v2.py
+nano /opt/tracetrader/dashboard/market_regime.py
+nano /opt/tracetrader/dashboard/agent_bias_extractor.py
+nano /opt/tracetrader/dashboard/signal_lifecycle.py
+
+# Frontend mới
+nano /opt/tracetrader/dashboard/static/index.html
+# → Paste nội dung index_v2.html
+
+================================================================
+ BƯỚC 2 — UPDATE PASSWORD TRONG CÁC FILE
+================================================================
+
+# Tìm và thay "your_password_here" trong:
+grep -n "your_password_here" /opt/tracetrader/dashboard/*.py
+
+# Sửa mỗi file:
+nano /opt/tracetrader/dashboard/api_v2.py         # dòng FREQTRADE_PASS
+nano /opt/tracetrader/dashboard/signal_lifecycle.py  # dòng FREQTRADE_PASS
+nano /opt/tracetrader/dashboard/feedback_collector.py # dòng FREQTRADE_PASS
+
+# Password lấy từ:
+cat /opt/tracetrader/freqtrade/user_data/config.json | grep password
+
+================================================================
+ BƯỚC 3 — CÀI THÊM PACKAGES
+================================================================
+
+source /opt/tracetrader/tradingagents-src/venv/bin/activate
+
+pip install ccxt pandas numpy
+
+# Verify
+python -c "import ccxt, pandas, numpy; print('OK')"
+
+deactivate
+
+================================================================
+ BƯỚC 4 — MIGRATE DATABASE
+================================================================
+
+source /opt/tracetrader/tradingagents-src/venv/bin/activate
+cd /opt/tracetrader/dashboard
+
+# Khởi tạo schema v2 (ADD COLUMN an toàn, không mất data cũ)
+python db_v2.py
+# Expected: [DB v2] Schema initialized at ...
+
+# Test market regime
+python market_regime.py
+# Expected: Regime: TRENDING_UP/SIDEWAYS/etc.
+
+# Test bias extractor
+python agent_bias_extractor.py
+# Expected: Extraction test results
+
+# Test signal lifecycle
+python signal_lifecycle.py
+# Expected: === Signal lifecycle sync done ===
+
+deactivate
+
+================================================================
+ BƯỚC 5 — BACKFILL AGENT BIASES (chạy 1 lần)
+================================================================
+
+# Nếu đã có agent messages từ V1, backfill bias/confidence
+source /opt/tracetrader/tradingagents-src/venv/bin/activate
+cd /opt/tracetrader/dashboard
+
+python -c "
+from agent_bias_extractor import backfill_agent_biases
+n = backfill_agent_biases(limit=1000)
+print(f'Backfilled {n} messages')
+"
+
+deactivate
+
+================================================================
+ BƯỚC 6 — CẬP NHẬT SYSTEMD SERVICE
+================================================================
+
+# Update service để dùng api_v2.py thay vì api.py
+nano /etc/systemd/system/tracetrader-api.service
+
+# Sửa dòng ExecStart:
+# TỪ: ... uvicorn api:app ...
+# THÀNH:
+ExecStart=/opt/tracetrader/tradingagents-src/venv/bin/uvicorn api_v2:app --host 0.0.0.0 --port 8888 --workers 1
+
+# Reload và restart
+systemctl daemon-reload
+systemctl restart tracetrader-api
+systemctl status tracetrader-api
+
+================================================================
+ BƯỚC 7 — CẬP NHẬT CRONTAB (4 jobs)
+================================================================
+
+crontab -e
+
+# Thêm/thay thế các jobs sau:
+
+# Job 1: TradingAgents + feedback injection (mỗi giờ, phút :02)
+2 * * * * cd /opt/tracetrader/dashboard && /opt/tracetrader/tradingagents-src/venv/bin/python agent_runner_v2.py --symbol BTC/USDT >> /opt/tracetrader/logs/cron.log 2>&1
+
+# Job 2: Market regime update mỗi giờ (phút :05, sau khi nến đóng)
+5 * * * * cd /opt/tracetrader/dashboard && /opt/tracetrader/tradingagents-src/venv/bin/python market_regime.py >> /opt/tracetrader/logs/regime.log 2>&1
+
+# Job 3: Signal lifecycle sync mỗi 5 phút
+*/5 * * * * cd /opt/tracetrader/dashboard && /opt/tracetrader/tradingagents-src/venv/bin/python signal_lifecycle.py >> /opt/tracetrader/logs/lifecycle.log 2>&1
+
+# Job 4: Feedback collection mỗi 30 phút (standalone backup)
+32 * * * * cd /opt/tracetrader/dashboard && /opt/tracetrader/tradingagents-src/venv/bin/python feedback_collector.py >> /opt/tracetrader/logs/feedback.log 2>&1
+
+# Verify
+crontab -l
+
+================================================================
+ BƯỚC 8 — VERIFY TOÀN BỘ HỆ THỐNG
+================================================================
+
+# Test API endpoints
+curl http://localhost:8888/api/status
+curl http://localhost:8888/api/dashboard/overview
+curl http://localhost:8888/api/dashboard/signals
+curl http://localhost:8888/api/dashboard/execution
+curl http://localhost:8888/api/dashboard/outcomes
+curl http://localhost:8888/api/dashboard/agents
+curl http://localhost:8888/api/dashboard/regimes
+curl http://localhost:8888/api/dashboard/feedback
+
+# Test trace endpoint
+curl http://localhost:8888/api/runs/1/trace
+curl http://localhost:8888/api/signals/1/lineage
+
+# Truy cập dashboard
+echo "http://$(curl -s ifconfig.me):8888"
+
+================================================================
+ BƯỚC 9 — CHẠY THỬ MANUAL ĐỂ VERIFY END-TO-END
+================================================================
+
+source /opt/tracetrader/tradingagents-src/venv/bin/activate
+cd /opt/tracetrader/dashboard
+
+# Step 1: Tính regime trước
+python market_regime.py
+# Check: Regime được ghi vào market_regimes table
+
+# Step 2: Chạy agent runner (mất 10-15 phút)
+python agent_runner_v2.py --symbol BTC/USDT
+# Check: run created, messages ghi vào DB, signal ghi vào DB
+
+# Step 3: Verify signal lifecycle
+python signal_lifecycle.py
+# Check: signal matched với FT trade nếu có
+
+# Step 4: Thu thập feedback
+python feedback_collector.py
+# Check: outcomes ghi nếu FT đã đóng trade
+
+# Step 5: Backfill bias
+python -c "from agent_bias_extractor import backfill_agent_biases; backfill_agent_biases()"
+
+# Step 6: Check dashboard data
+python -c "
+from db_v2 import get_overview_stats, get_run_trace
+import json
+ov = get_overview_stats()
+print('Overview:', json.dumps(ov, indent=2))
+"
+
+deactivate
+
+================================================================
+ CRONTAB SCHEDULE TIMELINE MỖI GIỜ
+================================================================
+
+:00  Nến 1h đóng
+:02  agent_runner_v2.py chạy
+     → Gọi feedback_collector trước run
+     → Gọi market_regime để lấy regime hiện tại
+     → Chạy TradingAgents debate
+     → Ghi signal vào DB
+     → Freqtrade đọc signal và execute
+:05  market_regime.py cập nhật độc lập
+:07  signal_lifecycle.py sync
+:12  signal_lifecycle.py sync
+:17  signal_lifecycle.py sync
+:22  signal_lifecycle.py sync
+:27  signal_lifecycle.py sync
+:32  feedback_collector.py standalone + lifecycle sync
+:37  signal_lifecycle.py sync
+...
+(lifecycle chạy mỗi 5 phút)
+
+================================================================
+ DASHBOARD 7 TABS — MỤC ĐÍCH
+================================================================
+
+Tab 1 — Overview:
+  Trả lời: Pipeline có end-to-end không? Gãy ở đâu?
+  Key metric: Traceability Rate (target >85%)
+
+Tab 2 — Signal Behavior:
+  Trả lời: AI đang ra BUY/SELL/HOLD như thế nào?
+  Key metric: Distribution, overconfidence rate, signal flip
+
+Tab 3 — Execution Compatibility:
+  Trả lời: Freqtrade có nhận signal không? Tại sao reject?
+  Key metric: Execution rate, rejection funnel
+
+Tab 4 — Outcome Metrics:
+  Trả lời: Signal sau khi execute lời/lỗ ra sao?
+  Key metric: Win rate vs 52%, PnL by confidence bucket
+
+Tab 5 — Agent Attribution:
+  Trả lời: Agent nào hay bullish/bearish? PM có nghe Risk không?
+  Key metric: Agent bias matrix, risk override rate
+
+Tab 6 — Market Regime:
+  Trả lời: AI hoạt động tốt/xấu trong regime nào?
+  Key metric: Win rate by regime, overtrade sideways rate
+
+Tab 7 — Feedback Learning:
+  Trả lời: Memory có làm AI thay đổi hành vi không?
+  Key metric: Before/After win rate, lesson applied rate
+
+Run Trace Viewer:
+  Click bất kỳ run → thấy full lineage:
+  Regime → Agent Debate → Signal → Execution → Outcome → Feedback
+
+================================================================
+ PHASE BUILD THEO SPEC
+================================================================
+
+Phase 1 (DONE — V1):  run → signal → basic UI
+Phase 2 (DONE — V2):  7 tabs + trace viewer + all metrics
+Phase 3 (TODO):       Agent scoring refinement
+                      Improve agent_bias_extractor accuracy
+                      Add more symbols (ETH/USDT, SOL/USDT)
+Phase 4 (TODO):       Feedback learning validation
+                      Statistical significance testing
+                      Export data for analysis
+
+================================================================
+ LOGS VÀ DEBUG
+================================================================
+
+# Xem tất cả logs realtime
+tmux new-session -s trader
+journalctl -u tracetrader-api -f &
+
+# Trong tmux windows riêng:
+tail -f /opt/tracetrader/logs/cron.log       # agent runner
+tail -f /opt/tracetrader/logs/regime.log     # market regime
+tail -f /opt/tracetrader/logs/lifecycle.log  # signal lifecycle
+tail -f /opt/tracetrader/logs/feedback.log   # feedback collector
+
+# DB inspection
+source /opt/tracetrader/tradingagents-src/venv/bin/activate
+cd /opt/tracetrader/dashboard
+
+python -c "
+from db_v2 import get_conn
+with get_conn() as c:
+    tables = c.execute(\"SELECT name FROM sqlite_master WHERE type='table'\").fetchall()
+    for t in tables:
+        n = c.execute(f'SELECT COUNT(*) FROM {t[0]}').fetchone()[0]
+        print(f'{t[0]}: {n} rows')
+"
+
+================================================================
+ CHECKLIST V2
+================================================================
+
+[ ] db_v2.py deployed + python db_v2.py OK
+[ ] market_regime.py deployed + test OK
+[ ] agent_bias_extractor.py deployed + test OK
+[ ] signal_lifecycle.py deployed + FREQTRADE_PASS updated
+[ ] api_v2.py deployed + FREQTRADE_PASS updated
+[ ] index_v2.html → /opt/tracetrader/dashboard/static/index.html
+[ ] systemctl service updated to api_v2:app
+[ ] systemctl restart tracetrader-api OK
+[ ] crontab -l shows 4 jobs
+[ ] curl /api/dashboard/overview returns JSON
+[ ] http://VPS_IP:8888 shows 7-tab dashboard
+[ ] Tab Overview: funnel visible
+[ ] Tab Run Trace: click run → full trace loads
+[ ] Manual run triggered → messages visible in Run Trace
+

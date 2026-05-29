@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TraceTrader Lab</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--s1:#161b22;--s2:#1c2128;--s3:#21262d;
+  --bd:#30363d;--bd2:#484f58;
+  --tx:#e6edf3;--mu:#8b949e;--mu2:#6e7681;
+  --buy:#3fb950;--sell:#f85149;--hold:#d29922;
+  --acc:#58a6ff;--pur:#bc8cff;--teal:#39d353;
+  --analysts:#1f6feb;--researchers:#238636;--risk:#b08800;--execution:#8957e5;
+  --r:6px;--font:'IBM Plex Mono',monospace;
+}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--tx);font-family:var(--font);font-size:12px;line-height:1.5}
+.root{display:grid;grid-template-rows:44px 36px 1fr;height:100vh}
+*::-webkit-scrollbar{width:3px;height:3px}
+*::-webkit-scrollbar-thumb{background:var(--bd);border-radius:2px}
+
+/* Topbar */
+.top{display:flex;align-items:center;justify-content:space-between;padding:0 14px;border-bottom:1px solid var(--bd);background:var(--s1)}
+.logo{font-size:15px;font-weight:700;color:var(--acc)}.logo em{color:var(--pur);font-style:normal}
+.kpi-strip{display:flex;align-items:center;gap:14px}
+.kpi{display:flex;flex-direction:column;align-items:center}
+.kv{font-size:15px;font-weight:700;line-height:1}
+.kl{font-size:9px;color:var(--mu2);margin-top:1px}
+.sep{width:1px;height:28px;background:var(--bd)}
+.top-r{display:flex;align-items:center;gap:8px;color:var(--mu);font-size:11px}
+.chip{padding:2px 7px;border-radius:4px;font-size:10px;background:var(--s3);border:1px solid var(--bd);color:var(--mu)}
+.btn{padding:3px 9px;border-radius:var(--r);border:1px solid var(--bd2);background:transparent;color:var(--tx);font-family:var(--font);font-size:10px;cursor:pointer;transition:all .15s}
+.btn:hover{background:var(--s3);border-color:var(--acc);color:var(--acc)}
+.wsd{width:7px;height:7px;border-radius:50%;background:var(--sell)}
+.wsd.on{background:var(--buy);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+/* Tab bar */
+.tabbar{display:flex;border-bottom:1px solid var(--bd);background:var(--s1);padding:0 14px;gap:0;overflow-x:auto}
+.tab{padding:6px 14px;font-size:10px;font-weight:700;cursor:pointer;border-bottom:2px solid transparent;color:var(--mu);transition:all .15s;white-space:nowrap;text-transform:uppercase;letter-spacing:.5px}
+.tab:hover{color:var(--tx)}
+.tab.active{color:var(--acc);border-bottom-color:var(--acc)}
+.tab-badge{display:inline-block;padding:0 5px;background:var(--s3);border-radius:8px;font-size:9px;margin-left:4px;color:var(--mu2)}
+
+/* Content area */
+.content{overflow-y:auto;padding:12px 14px}
+
+/* Cards & grids */
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px}
+.grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.grid5{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px}
+.card{background:var(--s2);border:1px solid var(--bd);border-radius:var(--r);padding:10px 12px}
+.cv{font-size:22px;font-weight:700;line-height:1.1;margin-bottom:2px}
+.cl{font-size:9px;color:var(--mu2);text-transform:uppercase;letter-spacing:.5px}
+.pos{color:var(--buy)}.neg{color:var(--sell)}.warn{color:var(--hold)}
+.section{margin-bottom:14px}
+.sh{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--mu2);margin-bottom:6px;padding-bottom:4px;border-bottom:1px solid var(--bd)}
+
+/* Two-pane layout for some tabs */
+.two-pane{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.three-pane{display:grid;grid-template-columns:260px 1fr 280px;gap:12px}
+
+/* Funnel */
+.funnel{display:flex;flex-direction:column;gap:0;align-items:center;padding:8px 0}
+.f-step{display:flex;align-items:center;gap:10px;width:100%;padding:8px 12px;background:var(--s3);border:1px solid var(--bd);border-radius:var(--r);margin-bottom:0}
+.f-num{font-size:18px;font-weight:700;color:var(--acc);min-width:50px;text-align:right}
+.f-lbl{font-size:11px;font-weight:700;flex:1}
+.f-pct{font-size:10px;color:var(--mu2);min-width:40px;text-align:right}
+.f-arr{text-align:center;color:var(--mu2);font-size:14px;padding:2px 0;width:100%}
+.f-step.lost{opacity:.5}
+
+/* Trace viewer */
+.trace-section{border:1px solid var(--bd);border-radius:var(--r);margin-bottom:8px;overflow:hidden}
+.trace-hdr{display:flex;align-items:center;gap:8px;padding:7px 10px;background:var(--s2);border-bottom:1px solid var(--bd);cursor:pointer}
+.trace-num{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:700;flex-shrink:0}
+.trace-body{padding:8px 10px;font-size:10px;line-height:1.7;display:none}
+.trace-body.open{display:block}
+
+/* Table */
+table{width:100%;border-collapse:collapse;font-size:10px}
+th{text-align:left;padding:5px 8px;border-bottom:2px solid var(--bd);color:var(--mu2);font-size:9px;text-transform:uppercase;letter-spacing:.5px;font-weight:700}
+td{padding:5px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+tr:last-child td{border-bottom:none}
+tr:hover td{background:var(--s2)}
+
+/* Bar chart */
+.bar-row{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.bar-lbl{font-size:10px;color:var(--mu);width:100px;flex-shrink:0;text-align:right}
+.bar-track{flex:1;height:12px;background:var(--s3);border-radius:2px;position:relative}
+.bar-fill{height:12px;border-radius:2px;transition:width .5s}
+.bar-val{font-size:10px;color:var(--tx);min-width:45px}
+
+/* Agent message (mini) */
+.amsg{border:1px solid var(--bd);border-radius:4px;margin-bottom:4px;overflow:hidden}
+.amsg-hdr{display:flex;align-items:center;gap:6px;padding:4px 8px}
+.amsg.analysts .amsg-hdr{background:rgba(31,111,235,.1)}
+.amsg.researchers .amsg-hdr{background:rgba(35,134,54,.1)}
+.amsg.risk_mgmt .amsg-hdr{background:rgba(176,136,0,.1)}
+.amsg.execution .amsg-hdr{background:rgba(137,87,229,.1)}
+.amsg.system .amsg-hdr{background:rgba(40,40,40,.3)}
+.amsg.memory .amsg-hdr{background:rgba(188,140,255,.1)}
+.av{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;flex-shrink:0}
+.av.analysts{background:rgba(88,166,255,.2);color:var(--acc)}
+.av.researchers{background:rgba(63,185,80,.2);color:var(--buy)}
+.av.risk_mgmt{background:rgba(210,153,34,.2);color:var(--hold)}
+.av.execution{background:rgba(188,140,255,.2);color:var(--pur)}
+.av.system,.av.memory{background:rgba(60,60,60,.4);color:var(--mu)}
+.amsg-name{font-size:10px;font-weight:700;flex:1}
+.bias-tag{padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700}
+.bias-bullish{background:rgba(63,185,80,.2);color:var(--buy)}
+.bias-bearish{background:rgba(248,81,73,.2);color:var(--sell)}
+.bias-neutral{background:rgba(210,153,34,.15);color:var(--hold)}
+.bias-mixed{background:rgba(88,166,255,.15);color:var(--acc)}
+.rec-tag{padding:1px 5px;border-radius:3px;font-size:9px;border:1px solid var(--bd);color:var(--mu)}
+.amsg-body{padding:5px 8px;font-size:10px;max-height:80px;overflow-y:auto;background:rgba(0,0,0,.15);white-space:pre-wrap;word-break:break-word;line-height:1.6}
+
+/* Status dots */
+.sdot{width:7px;height:7px;border-radius:50%;flex-shrink:0;display:inline-block}
+.sdot.running{background:var(--hold);animation:pulse 1s infinite}
+.sdot.done{background:var(--buy)}.sdot.error{background:var(--sell)}
+.atag{padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700}
+.atag.BUY{background:rgba(63,185,80,.2);color:var(--buy)}
+.atag.SELL{background:rgba(248,81,73,.2);color:var(--sell)}
+.atag.HOLD{background:rgba(210,153,34,.2);color:var(--hold)}
+.atag.EXIT{background:rgba(248,81,73,.15);color:var(--sell)}
+.regime-tag{padding:1px 7px;border-radius:3px;font-size:10px;font-weight:700}
+.TRENDING_UP{background:rgba(63,185,80,.2);color:var(--buy)}
+.TRENDING_DOWN{background:rgba(248,81,73,.2);color:var(--sell)}
+.SIDEWAYS{background:rgba(210,153,34,.15);color:var(--hold)}
+.HIGH_VOLATILITY{background:rgba(248,81,73,.1);color:#ff7b72}
+.LOW_VOLATILITY{background:rgba(88,166,255,.1);color:var(--acc)}
+.UNKNOWN{background:var(--s3);color:var(--mu)}
+
+.empty{color:var(--mu2);font-size:10px;text-align:center;padding:20px}
+#toast{position:fixed;bottom:14px;right:14px;padding:7px 12px;border-radius:var(--r);border:1px solid var(--bd);background:var(--s2);font-size:10px;transform:translateY(60px);transition:transform .25s;z-index:100}
+#toast.show{transform:translateY(0)}
+
+/* Run list */
+.run-item{padding:6px 9px;border:1px solid var(--bd);border-radius:var(--r);margin-bottom:5px;cursor:pointer;transition:all .15s}
+.run-item:hover{border-color:var(--bd2);background:var(--s2)}
+.run-item.sel{border-color:var(--acc);background:rgba(88,166,255,.06)}
+
+/* Before/After comparison */
+.compare-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.compare-card{border:1px solid var(--bd);border-radius:var(--r);padding:10px;text-align:center}
+.compare-card.after{border-color:rgba(63,185,80,.3);background:rgba(63,185,80,.04)}
+
+/* Confidence bucket chart */
+.bucket-row{display:flex;align-items:center;gap:6px;margin-bottom:6px}
+.bucket-label{font-size:10px;color:var(--mu);width:75px;flex-shrink:0}
+.bucket-bar{flex:1;height:14px;background:var(--s3);border-radius:2px;position:relative;overflow:hidden}
+.bucket-fill-pos{height:14px;background:var(--buy);border-radius:2px;transition:width .5s}
+.bucket-fill-neg{height:14px;background:var(--sell);border-radius:2px;transition:width .5s}
+.bucket-val{font-size:10px;min-width:50px;text-align:right}
+</style>
+</head>
+<body>
+<div class="root">
+
+<!-- TOPBAR -->
+<div class="top">
+  <div style="display:flex;align-items:center;gap:10px">
+    <div class="logo">Trace<em>Trader</em> Lab</div>
+    <span class="chip" id="pair-chip">BTC/USDT</span>
+    <div class="sep"></div>
+    <!-- KPI strip -->
+    <div class="kpi-strip" id="kpi-strip">
+      <div class="kpi"><div class="kv" id="k-runs">--</div><div class="kl">Lượt chạy</div></div>
+      <div class="kpi"><div class="kv" id="k-sigs">--</div><div class="kl">Tín hiệu</div></div>
+      <div class="kpi"><div class="kv" id="k-exec">--%</div><div class="kl">Thực thi</div></div>
+      <div class="kpi"><div class="kv" id="k-wr">--%</div><div class="kl">Tỷ lệ thắng</div></div>
+      <div class="kpi"><div class="kv" id="k-pnl">--</div><div class="kl">PnL TB</div></div>
+      <div class="kpi"><div class="kv warn" id="k-trace">--%</div><div class="kl">Truy vết</div></div>
+    </div>
+  </div>
+  <div class="top-r">
+    <div style="display:flex;align-items:center;gap:4px"><div class="wsd" id="wsd"></div><span id="ws-lbl">--</span></div>
+    <span id="clk">--:--:--</span>
+    <button class="btn" onclick="triggerRun()">▶ Chạy AI</button>
+    <button class="btn" onclick="triggerFeedback()">↺ Đồng bộ</button>
+  </div>
+</div>
+
+<!-- TAB BAR -->
+<div class="tabbar">
+  <div class="tab active" onclick="go(0)">Tổng quan</div>
+  <div class="tab" onclick="go(1)">Tín hiệu</div>
+  <div class="tab" onclick="go(2)">Thực thi</div>
+  <div class="tab" onclick="go(3)">Kết quả</div>
+  <div class="tab" onclick="go(4)">Agent AI</div>
+  <div class="tab" onclick="go(5)">Thị trường</div>
+  <div class="tab" onclick="go(6)">Học phản hồi</div>
+  <div class="tab" onclick="go(7)">Lịch sử chạy</div>
+</div>
+
+<!-- CONTENT -->
+<div class="content" id="content">
+  <!-- Tab 0: Overview -->
+  <div id="t0">
+    <div class="section">
+      <div class="sh">Kênh Pipeline</div>
+      <div class="two-pane">
+        <div>
+          <div class="funnel" id="funnel"></div>
+        </div>
+        <div>
+          <div class="sh">Truy vết</div>
+          <div class="card" style="text-align:center;padding:20px">
+            <div style="font-size:48px;font-weight:700" id="trace-rate-big">--%</div>
+            <div style="color:var(--mu2);font-size:11px;margin:8px 0">Truy vết Quyết định → Kết quả</div>
+            <div style="font-size:10px;color:var(--mu2)">
+              Mục tiêu: &gt;85% = sẵn sàng nghiên cứu<br>
+              &gt;95% = so sánh được giữa các repo
+            </div>
+          </div>
+          <div class="card" style="margin-top:8px">
+            <div class="sh" style="margin-bottom:8px">Sức khỏe hệ thống</div>
+            <div id="health-checks" style="font-size:10px;line-height:2;color:var(--mu)">Đang tải...</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 1: Signal Behavior -->
+  <div id="t1" style="display:none">
+    <div class="two-pane">
+      <div>
+        <div class="section">
+          <div class="sh">Phân phối (30 ngày)</div>
+          <div class="grid3">
+            <div class="card"><div class="cv pos" id="s-buy">--%</div><div class="cl">Tỷ lệ MUA</div></div>
+            <div class="card"><div class="cv neg" id="s-sell">--%</div><div class="cl">Tỷ lệ BÁN</div></div>
+            <div class="card"><div class="cv warn" id="s-hold">--%</div><div class="cl">Tỷ lệ GIỮ</div></div>
+          </div>
+          <div class="grid2">
+            <div class="card"><div class="cv" id="s-conf">--</div><div class="cl">Độ tin cậy TB</div></div>
+            <div class="card"><div class="cv warn" id="s-overconf">--%</div><div class="cl">Quá tự tin</div></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Độ tin cậy theo hành động</div>
+          <div id="conf-by-action">Loading...</div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="sh">Lịch sử tín hiệu (20 gần nhất)</div>
+          <table>
+            <thead><tr><th>Thời gian</th><th>Hành động</th><th>Độ TC</th><th>KL</th><th>Trạng thái</th></tr></thead>
+            <tbody id="sig-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 2: Execution -->
+  <div id="t2" style="display:none">
+    <div class="two-pane">
+      <div>
+        <div class="section">
+          <div class="sh">Kênh thực thi</div>
+          <div class="funnel" id="exec-funnel"></div>
+        </div>
+        <div class="section">
+          <div class="sh">Lý do từ chối</div>
+          <div id="rejection-bars">Loading...</div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="sh">Phân tích trạng thái</div>
+          <div id="exec-status">Đang tải...</div>
+        </div>
+        <div class="section">
+          <div class="sh">Vòng đời tín hiệu</div>
+          <div style="font-size:10px;color:var(--mu);line-height:2;padding:8px;background:var(--s2);border:1px solid var(--bd);border-radius:var(--r)">
+            Tạo → Xác thực → Chấp nhận<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Từ chối_*<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;↓ (nếu chấp nhận)<br>
+            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Đã thực thi → Đóng
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 3: Outcome -->
+  <div id="t3" style="display:none">
+    <div class="section">
+      <div class="grid5">
+        <div class="card"><div class="cv" id="o-total">--</div><div class="cl">Lệnh đã đóng</div></div>
+        <div class="card"><div class="cv" id="o-wr">--%</div><div class="cl">Tỷ lệ thắng</div></div>
+        <div class="card"><div class="cv" id="o-pnl">--</div><div class="cl">PnL TB</div></div>
+        <div class="card"><div class="cv" id="o-pf">--</div><div class="cl">Hệ số lợi nhuận</div></div>
+        <div class="card"><div class="cv warn" id="o-sl">--</div><div class="cl">SL bị chạm</div></div>
+      </div>
+    </div>
+    <div class="two-pane">
+      <div>
+        <div class="section">
+          <div class="sh">PnL theo mức độ tin cậy</div>
+          <div id="conf-buckets">Loading...</div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="sh">Kết quả gần đây</div>
+          <table>
+            <thead><tr><th>#Tín hiệu</th><th>Hành động</th><th>Độ TC</th><th>PnL%</th><th>Lý do thoát</th><th>TG</th></tr></thead>
+            <tbody id="outcome-table"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 4: Agent Attribution -->
+  <div id="t4" style="display:none">
+    <div class="section">
+      <div class="grid3">
+        <div class="card"><div class="cv" id="a-risk-block">--</div><div class="cl">Risk chặn</div></div>
+        <div class="card"><div class="cv warn" id="a-pm-override">--</div><div class="cl">PM can thiệp</div></div>
+        <div class="card"><div class="cv" id="a-override-rate">--%</div><div class="cl">Tỷ lệ can thiệp</div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="sh">Ma trận xu hướng Agent</div>
+      <table>
+        <thead><tr><th>Agent</th><th>Tổng</th><th>Tăng giá%</th><th>Giảm giá%</th><th>Trung lập%</th><th>Độ TC TB</th></tr></thead>
+        <tbody id="agent-matrix"></tbody>
+      </table>
+    </div>
+    <div class="section">
+      <div class="sh">Xem tranh luận — Click tab Lịch sử chạy để xem chi tiết</div>
+      <div style="font-size:10px;color:var(--mu2);padding:8px 0">
+        Tranh luận chi tiết xem tại tab <strong>Lịch sử chạy</strong>.
+        Tab này hiển thị xu hướng tổng hợp qua tất cả lượt chạy.
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 5: Market Regime -->
+  <div id="t5" style="display:none">
+    <div class="section">
+      <div class="sh">Chế độ thị trường hiện tại</div>
+      <div id="current-regime" class="card" style="display:flex;align-items:center;gap:12px">
+        <div style="font-size:28px;font-weight:700" id="regime-name">--</div>
+        <div style="font-size:10px;color:var(--mu)" id="regime-detail">Loading...</div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="sh">Hiệu suất theo chế độ</div>
+      <table>
+        <thead><tr><th>Chế độ</th><th>Lượt</th><th>Tỷ lệ GD</th><th>Thắng</th><th>PnL TB</th><th>Độ TC</th></tr></thead>
+        <tbody id="regime-table"></tbody>
+      </table>
+    </div>
+    <div class="section">
+      <div class="sh">Cảnh báo giao dịch quá mức</div>
+      <div id="overtrade-warn" class="card" style="font-size:11px;line-height:1.8;color:var(--mu)">
+        Đang tải...
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 6: Feedback Learning -->
+  <div id="t6" style="display:none">
+    <div class="section">
+      <div class="grid4">
+        <div class="card"><div class="cv" id="fb-total">--</div><div class="cl">Sự kiện phản hồi</div></div>
+        <div class="card"><div class="cv" id="fb-mem-rate">--%</div><div class="cl">Bộ nhớ đã dùng</div></div>
+        <div class="card"><div class="cv pos" id="fb-lesson-rate">--%</div><div class="cl">Bài học áp dụng</div></div>
+        <div class="card"><div class="cv warn" id="fb-repeat">--%</div><div class="cl">Lỗi lặp lại</div></div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="sh">Trước và sau phản hồi</div>
+      <div class="compare-grid">
+        <div class="compare-card">
+          <div style="font-size:10px;color:var(--mu2);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Trước phản hồi</div>
+          <div class="cv" id="bf-wr">--%</div><div class="cl">Tỷ lệ thắng</div>
+          <div class="cv" id="bf-pnl" style="margin-top:6px">--</div><div class="cl">PnL TB</div>
+          <div style="font-size:9px;color:var(--mu2);margin-top:4px" id="bf-n">-- lệnh</div>
+        </div>
+        <div class="compare-card after">
+          <div style="font-size:10px;color:var(--buy);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">Sau phản hồi</div>
+          <div class="cv pos" id="af-wr">--%</div><div class="cl">Tỷ lệ thắng</div>
+          <div class="cv" id="af-pnl" style="margin-top:6px">--</div><div class="cl">PnL TB</div>
+          <div style="font-size:9px;color:var(--mu2);margin-top:4px" id="af-n">-- lệnh</div>
+        </div>
+      </div>
+    </div>
+    <div class="section">
+      <div class="sh">Ngữ cảnh bộ nhớ (lần cuối inject)</div>
+      <div id="mem-box" style="background:var(--s2);border:1px solid var(--bd);border-radius:var(--r);padding:10px;font-size:10px;white-space:pre-wrap;max-height:200px;overflow-y:auto;line-height:1.7;color:var(--tx)">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Tab 7: Run Trace -->
+  <div id="t7" style="display:none">
+    <div style="display:grid;grid-template-columns:220px 1fr;gap:12px;height:calc(100vh - 130px)">
+      <!-- Run list -->
+      <div>
+        <div class="sh">Lượt chạy</div>
+        <div style="overflow-y:auto;height:calc(100% - 20px)" id="trace-runs"></div>
+      </div>
+      <!-- Trace detail -->
+      <div style="overflow-y:auto" id="trace-detail">
+        <div class="empty">Chọn một lượt chạy để xem chi tiết</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /content -->
+</div><!-- /root -->
+
+<div id="toast"></div>
+
+<script>
+const API = window.location.origin;
+const WS  = (location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws';
+
+const S = {
+  tab: 0, ws: null,
+  overview: null, signals: null, execution: null, outcomes: null,
+  agents: null, regimes: null, feedback: null,
+  runs: [], selectedRunId: null,
+};
+
+const $=id=>document.getElementById(id);
+const esc=s=>String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+const fmtP=v=>(v>=0?'+':'')+parseFloat(v||0).toFixed(2)+'%';
+const fmtAge=iso=>{if(!iso)return'--';const d=Date.now()-new Date(iso).getTime();if(d<3600000)return Math.floor(d/60000)+'m ago';if(d<86400000)return Math.floor(d/3600000)+'h ago';return new Date(iso).toLocaleDateString('vi-VN');};
+const fmtTime=iso=>{try{return new Date(iso).toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'})}catch{return'--'}};
+function toast(m,d=3000){const e=$('toast');e.textContent=m;e.classList.add('show');setTimeout(()=>e.classList.remove('show'),d);}
+
+setInterval(()=>$('clk').textContent=new Date().toLocaleTimeString('vi-VN'),1000);
+
+// ── Tabs ──────────────────────────────────────────────────────────
+const TABS = ['t0','t1','t2','t3','t4','t5','t6','t7'];
+function go(idx){
+  S.tab = idx;
+  TABS.forEach((t,i)=>{
+    $(t).style.display = i===idx?'':'none';
+    document.querySelectorAll('.tab')[i].classList.toggle('active', i===idx);
+  });
+  loadTab(idx);
+}
+
+async function loadTab(idx){
+  const loaders = [loadOverview, loadSignals, loadExecution, loadOutcomes,
+                   loadAgents, loadRegimes, loadFeedback, loadTraceRuns];
+  try{ await loaders[idx](); } catch(e){ console.warn('Tab load:', e); }
+}
+
+// ── WebSocket ─────────────────────────────────────────────────────
+function connectWS(){
+  S.ws = new WebSocket(WS);
+  S.ws.onopen = ()=>{ $('wsd').classList.add('on'); $('ws-lbl').textContent='Live'; toast('Connected'); };
+  S.ws.onmessage = async e=>{
+    if(e.data === 'pong') return;
+    let m; try { m = JSON.parse(e.data); } catch(_){ return; }
+    if(m.type==='init'||m.type==='update'){
+      S.runs = m.data.runs||[];
+      if(S.tab===0) await loadOverview();
+      if(S.tab===7) renderTraceRuns();
+      renderTopKPIs(m.data);
+    }
+  };
+  S.ws.onclose = ()=>{ $('wsd').classList.remove('on'); $('ws-lbl').textContent='Reconnecting...'; setTimeout(connectWS,3000); };
+  S.ws.onerror = ()=>S.ws.close();
+  setInterval(()=>{ if(S.ws&&S.ws.readyState===1) S.ws.send('ping'); },25000);
+}
+
+// ── Top KPIs ──────────────────────────────────────────────────────
+function renderTopKPIs(data){
+  const ov = S.overview;
+  if(!ov) return;
+  $('k-runs').textContent = ov.total_runs||'--';
+  $('k-sigs').textContent = ov.total_signals||'--';
+  $('k-exec').textContent = (ov.execution_rate||0)+'%';
+  const wrEl=$('k-wr');
+  if(wrEl){ wrEl.textContent=(ov.win_rate||0)+'%'; wrEl.className='kv '+(ov.win_rate>=52?'pos':ov.win_rate>=50?'warn':'neg'); }
+  const pnlEl=$('k-pnl'); if(pnlEl){ const p=ov.avg_pnl||0; pnlEl.textContent=fmtP(p); pnlEl.className='kv '+(p>=0?'pos':'neg'); }
+  const trEl=$('k-trace');
+  if(trEl){ const t=ov.traceability_rate||0; trEl.textContent=t+'%'; trEl.className='kv '+(t>=85?'pos':t>=70?'warn':'neg'); }
+  $('trace-rate-big').textContent=(ov.traceability_rate||0)+'%';
+  const tb=$('trace-rate-big');
+  if(tb){ const t=ov.traceability_rate||0; tb.style.color=t>=85?'var(--buy)':t>=70?'var(--hold)':'var(--sell)'; }
+}
+
+// ── Tab 0: Overview ───────────────────────────────────────────────
+async function loadOverview(){
+  const r = await fetch(API+'/api/dashboard/overview');
+  S.overview = await r.json();
+  const ov = S.overview;
+  renderTopKPIs({});
+  // Funnel
+  const f = ov.funnel||{};
+  const steps = [
+    {n:f.runs,lbl:'Lượt AI đã chạy',key:'runs'},
+    {n:f.valid_signals,lbl:'Tín hiệu hợp lệ (MUA/BÁN)',key:'valid'},
+    {n:f.executed,lbl:'Lệnh FT mở',key:'exec'},
+    {n:f.outcomes,lbl:'Kết quả ghi nhận',key:'out'},
+    {n:f.feedback_used,lbl:'Lượt đã dùng phản hồi',key:'fb'},
+  ];
+  $('funnel').innerHTML = steps.map((s,i)=>{
+    const pct = i>0 && steps[0].n ? Math.round(s.n/steps[0].n*100) : 100;
+    const lost = pct < 50;
+    return `<div class="f-step${lost?' lost':''}">
+      <div class="f-num">${s.n??'0'}</div>
+      <div class="f-lbl">${s.lbl}</div>
+      <div class="f-pct">${i?pct+'%':''}</div>
+    </div>${i<steps.length-1?'<div class="f-arr">↓</div>':''}`;
+  }).join('');
+
+  // Health checks
+  $('health-checks').innerHTML = `
+    Module phản hồi: <strong style="color:${ov.feedback_used_runs>0?'var(--buy)':'var(--mu2)'}">${ov.feedback_used_runs>0?'Hoạt động':'Chưa hoạt động'}</strong><br>
+    Truy vết: <strong style="color:${(ov.traceability_rate||0)>=70?'var(--buy)':'var(--sell)'}">${ov.traceability_rate||0}%</strong>
+      ${(ov.traceability_rate||0)<70?' ← Pipeline còn thiếu dữ liệu':''}<br>
+    Tỷ lệ thắng vs mục tiêu 52%: <strong style="color:${(ov.win_rate||0)>=52?'var(--buy)':'var(--sell)'}">${ov.win_rate||0}%</strong>
+      ${(ov.win_rate||0)>=52?' ✓':' ← Dưới mục tiêu'}<br>
+    Hệ số lợi nhuận: <strong>${ov.profit_factor||'N/A'}</strong>${ov.profit_factor&&ov.profit_factor>1?' ✓':''}<br>
+    Tổng kết quả: <strong>${ov.outcomes||0}</strong> ${(ov.outcomes||0)<30?' (cần 30+ để có ý nghĩa thống kê)':''}
+  `;
+}
+
+// ── Tab 1: Signal Behavior ────────────────────────────────────────
+async function loadSignals(){
+  const r = await fetch(API+'/api/dashboard/signals?days=30');
+  S.signals = await r.json();
+  const d = S.signals;
+  $('s-buy').textContent=(d.buy_rate||0)+'%'; $('s-buy').className='cv pos';
+  $('s-sell').textContent=(d.sell_rate||0)+'%';
+  $('s-hold').textContent=(d.hold_rate||0)+'%';
+  $('s-conf').textContent=d.avg_confidence||'--';
+  $('s-overconf').textContent=(d.overconfidence_rate||0)+'%';
+
+  // Confidence by action bars
+  const cba = d.confidence_by_action||[];
+  $('conf-by-action').innerHTML = cba.map(row=>`
+    <div class="bar-row">
+      <div class="bar-lbl">${row.action}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${(row.avg_c||0)*100}%;background:${row.action==='BUY'?'var(--buy)':row.action==='SELL'?'var(--sell)':'var(--hold)'}"></div></div>
+      <div class="bar-val">${parseFloat(row.avg_c||0).toFixed(2)} (${row.cnt})</div>
+    </div>
+  `).join('');
+
+  // Signal timeline
+  const tl = d.timeline||[];
+  $('sig-table').innerHTML = tl.slice(0,20).map(s=>`
+    <tr>
+      <td>${fmtTime(s.created_at)}</td>
+      <td><span class="atag ${s.action}">${s.action}</span></td>
+      <td>${parseFloat(s.confidence||0).toFixed(2)}</td>
+      <td>${s.position_size_pct?s.position_size_pct+'%':'--'}</td>
+      <td><span style="font-size:9px;color:var(--mu2)">${s.signal_status||''}</span></td>
+    </tr>
+  `).join('') || '<tr><td colspan="5" class="empty">Chưa có tín hiệu</td></tr>';
+}
+
+// ── Tab 2: Execution ──────────────────────────────────────────────
+async function loadExecution(){
+  const r = await fetch(API+'/api/dashboard/execution');
+  S.execution = await r.json();
+  const d = S.execution;
+  // Funnel
+  const f = d.funnel||{};
+  $('exec-funnel').innerHTML = [
+    {n:f.signals,lbl:'Tín hiệu hợp lệ'},
+    {n:f.accepted,lbl:'Strategy chấp nhận'},
+    {n:f.orders,lbl:'Lệnh đã tạo'},
+    {n:f.opened,lbl:'Lệnh mở'},
+  ].map((s,i,arr)=>`
+    <div class="f-step">
+      <div class="f-num">${s.n??'0'}</div>
+      <div class="f-lbl">${s.lbl}</div>
+      <div class="f-pct">${i>0&&arr[0].n?Math.round(s.n/arr[0].n*100)+'%':''}</div>
+    </div>${i<arr.length-1?'<div class="f-arr">↓</div>':''}
+  `).join('');
+
+  // Rejection reasons
+  const reasons = d.rejection_reasons||[];
+  const maxN = reasons.length ? Math.max(...reasons.map(r=>r.n)) : 1;
+  $('rejection-bars').innerHTML = reasons.length ? reasons.map(r=>`
+    <div class="bar-row">
+      <div class="bar-lbl" style="width:180px;font-size:9px">${esc(r.rejection_reason)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${Math.round(r.n/maxN*100)}%;background:var(--sell)"></div></div>
+      <div class="bar-val">${r.n}</div>
+    </div>
+  `).join('') : '<div class="empty">Chưa có lời từ chối</div>';
+
+  // Status breakdown
+  const sb = d.status_breakdown||{};
+  $('exec-status').innerHTML = Object.entries(sb).map(([k,v])=>`
+    <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--bd);font-size:10px">
+      <span style="color:var(--mu)">${k}</span><strong>${v}</strong>
+    </div>
+  `).join('') || '<div class="empty">Chưa có dữ liệu thực thi</div>';
+}
+
+// ── Tab 3: Outcome ────────────────────────────────────────────────
+async function loadOutcomes(){
+  const r = await fetch(API+'/api/dashboard/outcomes');
+  S.outcomes = await r.json();
+  const d = S.outcomes;
+  $('o-total').textContent=d.total||'--';
+  const wrEl=$('o-wr'); if(wrEl){ const w=d.win_rate||0; wrEl.textContent=w+'%'; wrEl.className='cv '+(w>=52?'pos':w>=50?'warn':'neg'); }
+  const pnlEl=$('o-pnl'); if(pnlEl){ const p=d.avg_pnl||0; pnlEl.textContent=fmtP(p); pnlEl.className='cv '+(p>=0?'pos':'neg'); }
+  $('o-pf').textContent=d.profit_factor||'--';
+  $('o-sl').textContent=d.sl_triggered||0;
+
+  // Confidence buckets
+  const bkts = d.confidence_buckets||[];
+  $('conf-buckets').innerHTML = bkts.length ? bkts.map(b=>{
+    const avgP = parseFloat(b.avg_pnl||0);
+    const wr = b.n ? Math.round((b.wins||0)/b.n*100) : 0;
+    const barW = Math.min(100, Math.abs(avgP)*20);
+    return`<div class="bucket-row">
+      <div class="bucket-label">${b.bucket}</div>
+      <div class="bucket-bar">
+        <div class="${avgP>=0?'bucket-fill-pos':'bucket-fill-neg'}" style="width:${barW}%"></div>
+      </div>
+      <div class="bucket-val ${avgP>=0?'pos':'neg'}">${fmtP(avgP)}</div>
+      <div style="font-size:9px;color:var(--mu2);min-width:60px">${wr}% WR (${b.n})</div>
+    </div>`;
+  }).join('') : '<div class="empty">Cần ít nhất 5 outcomes để hiển thị</div>';
+
+  // Outcome table
+  const rec = d.recent||[];
+  $('outcome-table').innerHTML = rec.slice(0,15).map(o=>{
+    const p=parseFloat(o.profit_pct||0);
+    return`<tr>
+      <td><a href="#" onclick="loadTrace(${o.signal_id})" style="color:var(--acc)">#${o.signal_id}</a></td>
+      <td><span class="atag ${o.signal_action}">${o.signal_action}</span></td>
+      <td>${parseFloat(o.confidence||0).toFixed(2)}</td>
+      <td class="${p>=0?'pos':'neg'}">${fmtP(p)}</td>
+      <td style="font-size:9px;color:var(--mu2)">${o.close_reason||'--'}</td>
+      <td>${Math.floor((o.trade_duration||0)/60)}h${(o.trade_duration||0)%60}m</td>
+    </tr>`;
+  }).join('') || '<tr><td colspan="6" class="empty">Chưa có kết quả</td></tr>';
+}
+
+// ── Tab 4: Agent Attribution ──────────────────────────────────────
+async function loadAgents(){
+  const r = await fetch(API+'/api/dashboard/agents');
+  S.agents = await r.json();
+  const d = S.agents;
+  $('a-risk-block').textContent=d.risk_block_count||0;
+  $('a-pm-override').textContent=d.pm_override_count||0;
+  const orEl=$('a-override-rate'); if(orEl){ const v=d.risk_override_rate||0; orEl.textContent=v+'%'; orEl.className='cv '+(v>30?'warn':''); }
+
+  const matrix = d.agent_matrix||[];
+  $('agent-matrix').innerHTML = matrix.length ? matrix.map(a=>{
+    const total=a.total||1;
+    const bp=Math.round((a.bullish||0)/total*100);
+    const np=Math.round((a.bearish||0)/total*100);
+    const tp=Math.round((a.neutral||0)/total*100);
+    return`<tr>
+      <td><strong>${esc(a.agent_name)}</strong></td>
+      <td>${a.total}</td>
+      <td class="pos">${bp}%</td>
+      <td class="neg">${np}%</td>
+      <td class="warn">${tp}%</td>
+      <td>${parseFloat(a.avg_conf||0).toFixed(2)}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">Chưa có dữ liệu agent — cần thêm lượt chạy</td></tr>';
+}
+
+// ── Tab 5: Market Regime ──────────────────────────────────────────
+async function loadRegimes(){
+  const r = await fetch(API+'/api/dashboard/regimes');
+  S.regimes = await r.json();
+  const d = S.regimes;
+
+  // Current regime
+  const latest = (d.latest_regimes||[])[0];
+  if(latest){
+    $('regime-name').textContent=latest.regime;
+    $('regime-name').className='regime-tag '+latest.regime;
+    $('regime-detail').innerHTML=`ADX: ${latest.adx||'--'} | ATR%: ${latest.atr_pct||'--'}%<br>EMA căn chỉnh: ${latest.ema_aligned?'Có':'Không'} | Vol Z: ${latest.volume_zscore||'--'}<br>Giá: $${parseFloat(latest.close_price||0).toLocaleString()}`;
+  } else {
+    $('regime-name').textContent='Không có dữ liệu';
+    $('regime-detail').textContent='Chạy market_regime.py để tính toán';
+  }
+
+  // Regime performance
+  const perf = d.regime_performance||[];
+  $('regime-table').innerHTML = perf.length ? perf.map(p=>{
+    const avgP=parseFloat(p.avg_pnl||0);
+    return`<tr>
+      <td><span class="regime-tag ${p.regime}">${p.regime}</span></td>
+      <td>${p.runs}</td>
+      <td>${p.trade_rate||0}%</td>
+      <td class="${(p.win_rate||0)>=52?'pos':(p.win_rate||0)>=50?'warn':'neg'}">${p.win_rate||0}%</td>
+      <td class="${avgP>=0?'pos':'neg'}">${fmtP(avgP)}</td>
+      <td>${parseFloat(p.avg_conf||0).toFixed(2)}</td>
+    </tr>`;
+  }).join('') : '<tr><td colspan="6" class="empty">Chưa có dữ liệu chế độ</td></tr>';
+
+  // Overtrade warning
+  const sideways = perf.find(p=>p.regime==='SIDEWAYS');
+  if(sideways && sideways.avg_pnl < 0 && sideways.trade_rate > 50){
+    $('overtrade-warn').innerHTML=`<span style="color:var(--sell)">⚠ Phát hiện giao dịch quá mức trong chế độ SIDEWAYS</span><br>
+    Tỷ lệ GD: ${sideways.trade_rate}% | PnL TB: ${fmtP(sideways.avg_pnl)}<br>
+    AI đang giao dịch quá nhiều khi SIDEWAYS — nên thêm HOLD gate khi ADX < 20.`;
+  } else {
+    $('overtrade-warn').innerHTML=sideways
+      ? `SIDEWAYS: ${sideways.trade_rate}% tỷ lệ GD, ${fmtP(sideways.avg_pnl)} PnL TB — trong ngưỡng chấp nhận được`
+      : 'Chưa đủ dữ liệu chế độ để phát hiện giao dịch quá mức.';
+  }
+}
+
+// ── Tab 6: Feedback Learning ──────────────────────────────────────
+async function loadFeedback(){
+  const [fbR, memR] = await Promise.all([
+    fetch(API+'/api/dashboard/feedback'),
+    fetch(API+'/api/memory/BTC%252FUSDT'),
+  ]);
+  S.feedback = await fbR.json();
+  const mem = await memR.json();
+  const d = S.feedback;
+
+  $('fb-total').textContent=d.total_feedback_events||0;
+  $('fb-mem-rate').textContent=(d.memory_usage_rate||0)+'%';
+  $('fb-lesson-rate').textContent=(d.lesson_applied_rate||0)+'%';
+  $('fb-repeat').textContent=(d.repeat_mistake_rate||0)+'%';
+
+  const bf = d.before_feedback||{};
+  const af = d.after_feedback||{};
+  $('bf-wr').textContent=(bf.win_rate||0)+'%';
+  const bfPnl=$('bf-pnl'); if(bfPnl){ const p=bf.avg_pnl||0; bfPnl.textContent=fmtP(p); bfPnl.className='cv '+(p>=0?'pos':'neg'); }
+  $('bf-n').textContent=(bf.total||0)+' trades';
+  $('af-wr').textContent=(af.win_rate||0)+'%';
+  const afPnl=$('af-pnl'); if(afPnl){ const p=af.avg_pnl||0; afPnl.textContent=fmtP(p); afPnl.className='cv '+(p>=0?'pos':'neg'); }
+  $('af-n').textContent=(af.total||0)+' trades';
+
+  $('mem-box').textContent=mem.context||'Chưa có ngữ cảnh bộ nhớ. Cần ít nhất 1 kết quả đã hoàn thành.';
+}
+
+// ── Tab 7: Run Trace ──────────────────────────────────────────────
+async function loadTraceRuns(){
+  const r = await fetch(API+'/api/runs?limit=30');
+  S.runs = await r.json();
+  renderTraceRuns();
+}
+
+function renderTraceRuns(){
+  const el=$('trace-runs');
+  if(!S.runs.length){el.innerHTML='<div class="empty">Chưa có lượt chạy</div>';return;}
+  el.innerHTML=S.runs.map(r=>`
+    <div class="run-item${S.selectedRunId===r.id?' sel':''}" onclick="loadTrace(${r.id},'run')">
+      <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+        <span style="font-weight:700">${r.symbol}</span>
+        <span style="font-size:9px;color:var(--mu2)">${fmtAge(r.started_at)}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:5px">
+        <span class="sdot ${r.status}"></span>
+        <span style="font-size:9px;color:var(--mu)">${r.status}</span>
+        ${r.final_action?`<span class="atag ${r.final_action}">${r.final_action}</span>`:''}
+        ${r.market_regime?`<span class="regime-tag ${r.market_regime}" style="font-size:8px">${r.market_regime.replace('_',' ')}</span>`:''}
+      </div>
+    </div>
+  `).join('');
+}
+
+async function loadTrace(id, source='run'){
+  if(source==='run') S.selectedRunId=id;
+  renderTraceRuns();
+
+  // Navigate to trace tab
+  if(S.tab!==7){ go(7); }
+
+  const r = await fetch(API+'/api/runs/'+id+'/trace');
+  const trace = await r.json();
+  if(!trace||!trace.run){$('trace-detail').innerHTML='<div class="empty">Không có dữ liệu trace</div>';return;}
+
+  const run=trace.run, regime=trace.regime, msgs=trace.messages||[];
+  const sig=trace.signal, exec=trace.execution, out=trace.outcome, fb=trace.feedback;
+
+  const layerColors = {analysts:'var(--analysts)',researchers:'var(--researchers)',risk_mgmt:'var(--risk)',execution:'var(--execution)',system:'#555',memory:'var(--pur)'};
+
+  $('trace-detail').innerHTML = `
+    <!-- Run header -->
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--bd)">
+      <div>
+        <div style="font-size:18px;font-weight:700">Run #${run.id} — ${run.symbol}</div>
+        <div style="font-size:10px;color:var(--mu2)">${run.started_at?.slice(0,19)||''} · ${run.finished_at?'Hoàn tất':'Đang chạy'}</div>
+      </div>
+      ${run.final_action?`<span class="atag ${run.final_action}" style="font-size:14px">${run.final_action}</span>`:''}
+      ${run.final_confidence?`<span style="font-size:14px;font-weight:700">${(run.final_confidence*100).toFixed(0)}%</span>`:''}
+      ${run.market_regime?`<span class="regime-tag ${run.market_regime}">${run.market_regime}</span>`:''}
+      ${run.past_context_injected?`<span class="chip" style="color:var(--pur)">Bộ nhớ đã dùng</span>`:''}  
+    </div>
+
+    <!-- 1. Regime -->
+    <div class="trace-section">
+      <div class="trace-hdr" onclick="toggleTrace(this)">
+        <div class="trace-num" style="background:rgba(88,166,255,.2);color:var(--acc)">1</div>
+        <strong>Chế độ thị trường</strong>
+        ${run.market_regime?`<span class="regime-tag ${run.market_regime}">${run.market_regime}</span>`:'<span style="color:var(--mu2)">Không rõ</span>'}
+      </div>
+      <div class="trace-body">
+        ${regime?`ADX: ${regime.adx} | ATR%: ${regime.atr_pct}% | EMA căn chỉnh: ${regime.ema_aligned?'Có':'Không'}<br>Volume Z: ${regime.volume_zscore} | Giá: $${parseFloat(regime.close_price||0).toLocaleString()}`:'Chưa có dữ liệu chế độ — chạy market_regime.py'}
+      </div>
+    </div>
+
+    <!-- 2. Agent Debate -->
+    <div class="trace-section">
+      <div class="trace-hdr" onclick="toggleTrace(this)">
+        <div class="trace-num" style="background:rgba(31,111,235,.2);color:var(--acc)">2</div>
+        <strong>Tranh luận Agent</strong>
+        <span style="font-size:10px;color:var(--mu2)">${msgs.filter(m=>m.layer!=='system').length} agent</span>
+      </div>
+      <div class="trace-body open">
+        ${msgs.map(m=>`
+          <div class="amsg ${m.layer}">
+            <div class="amsg-hdr">
+              <div class="av ${m.layer}">${(m.agent_name||'').split(' ').map(w=>w[0]).join('').slice(0,2)}</div>
+              <div class="amsg-name">${esc(m.agent_name)}</div>
+              ${m.agent_bias?`<span class="bias-tag bias-${m.agent_bias}">${m.agent_bias}</span>`:''}
+              ${m.agent_confidence?`<span style="font-size:9px;color:var(--mu)">${parseFloat(m.agent_confidence).toFixed(2)}</span>`:''}
+              ${m.agent_recommendation?`<span class="rec-tag">${m.agent_recommendation}</span>`:''}
+            </div>
+            <div class="amsg-body">${esc((m.content||'').slice(0,400))}${(m.content||'').length>400?'...':''}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <!-- 3. Signal -->
+    <div class="trace-section">
+      <div class="trace-hdr" onclick="toggleTrace(this)">
+        <div class="trace-num" style="background:rgba(188,140,255,.2);color:var(--pur)">3</div>
+        <strong>Tín hiệu cuối</strong>
+        ${sig?`<span class="atag ${sig.action}">${sig.action}</span> <span style="font-size:10px">${(sig.confidence||0)*100|0}% độ TC</span>`:'<span style="color:var(--mu2)">Không có tín hiệu</span>'}
+      </div>
+      <div class="trace-body">
+        ${sig?`Hành động: <strong>${sig.action}</strong> | Độ tin cậy: <strong>${sig.confidence}</strong><br>
+        SL: ${sig.stop_loss?((sig.stop_loss*100).toFixed(2)+'%'):'--'} | TP: ${sig.take_profit?((sig.take_profit*100).toFixed(2)+'%'):'--'}<br>
+        KL: ${sig.position_size_pct||'--'}% | Trạng thái: ${sig.signal_status||'--'}<br>
+        Lý do: ${esc(sig.reason||'--').slice(0,200)}`:'Không có tín hiệu được tạo'}
+      </div>
+    </div>
+
+    <!-- 4. Execution -->
+    <div class="trace-section">
+      <div class="trace-hdr" onclick="toggleTrace(this)">
+        <div class="trace-num" style="background:rgba(63,185,80,.2);color:var(--buy)">4</div>
+        <strong>Thực thi</strong>
+        ${exec?`<span style="font-size:10px;color:var(--mu2)">${exec.status}</span>`:'<span style="color:var(--mu2)">Chưa có bản ghi</span>'}
+        ${exec&&exec.status.includes('REJECTED')?`<span style="font-size:9px;color:var(--sell)">↳ ${exec.rejection_reason||''}</span>`:''}
+      </div>
+      <div class="trace-body">
+        ${exec?`Trạng thái: <strong>${exec.status}</strong><br>
+        FT Trade ID: ${exec.freqtrade_trade_id||'--'}<br>
+        Lệnh tạo: ${exec.order_created?'Có':'Không'} | Lệnh mở: ${exec.trade_opened?'Có':'Không'}<br>
+        ${exec.rejection_reason?`Từ chối: <span style="color:var(--sell)">${exec.rejection_reason}</span>`:''}`
+        :'Chưa có bản ghi thực thi — tín hiệu chưa tới Freqtrade'}
+      </div>
+    </div>
+
+    <!-- 5. Outcome -->
+    <div class="trace-section">
+      <div class="trace-hdr" onclick="toggleTrace(this)">
+        <div class="trace-num" style="background:${out&&out.outcome_correct?'rgba(63,185,80,.2)':'rgba(248,81,73,.2)'};color:${out&&out.outcome_correct?'var(--buy)':'var(--sell)'}">5</div>
+        <strong>Kết quả</strong>
+        ${out?`<span class="${(out.profit_pct||0)>=0?'pos':'neg'}">${fmtP(out.profit_pct||0)}</span>`:'<span style="color:var(--mu2)">Chờ kết quả</span>'}
+        ${out?`<span style="font-size:9px;color:var(--mu2)">${out.close_reason||''}</span>`:''}
+      </div>
+      <div class="trace-body">
+        ${out?`PnL: <strong class="${(out.profit_pct||0)>=0?'pos':'neg'}">${fmtP(out.profit_pct||0)}</strong> (${(out.profit_abs||0).toFixed(2)} USDT)<br>
+        Thoát: ${out.close_reason||'--'} | Thời gian: ${Math.floor((out.trade_duration||0)/60)}h ${(out.trade_duration||0)%60}m<br>
+        SL bị chạm: ${out.sl_triggered?'<span style="color:var(--sell)">CÓ</span>':'Không'} | TP đạt: ${out.tp1_triggered?'<span style="color:var(--buy)">CÓ</span>':'Không'}<br>
+        Kết quả: ${out.outcome_correct?'<span class="pos">✓ ĐÚNG</span>':'<span class="neg">✗ SAI</span>'}`
+        :'Lệnh chưa đóng hoặc chưa có kết quả'}
+      </div>
+    </div>
+
+    <!-- 6. Feedback -->
+    <div class="trace-section">
+      <div class="trace-hdr" onclick="toggleTrace(this)">
+        <div class="trace-num" style="background:rgba(188,140,255,.2);color:var(--pur)">6</div>
+        <strong>Bài học phản hồi</strong>
+        ${fb?`<span style="font-size:10px;color:var(--pur)">Bộ nhớ ${fb.memory_referenced?'đã tham chiếu':'chưa tham chiếu'}</span>`:'<span style="color:var(--mu2)">Không có phản hồi</span>'}
+      </div>
+      <div class="trace-body">
+        ${fb?`Bộ nhớ tham chiếu: ${fb.memory_referenced?'<span style="color:var(--pur)">CÓ</span>':'Không'}<br>
+        Bài học áp dụng: ${fb.lesson_applied?'<span class="pos">CÓ</span>':'Không'}<br>
+        Hành động đã thay đổi: ${fb.action_changed?`<span class="pos">CÓ (${fb.action_before_memory} → ${fb.action_after_memory})</span>`:'Không'}<br>
+        Lặp lỗi cũ: ${fb.repeat_mistake_detected?'<span class="neg">CÓ</span>':'Không'}<br>
+        <div style="margin-top:6px;font-size:9px;color:var(--mu2)">Ngữ cảnh đã inject:</div>
+        <div style="font-size:9px;background:rgba(0,0,0,.2);padding:6px;border-radius:4px;max-height:80px;overflow-y:auto;white-space:pre-wrap">${esc((fb.past_context||'').slice(0,400))}</div>`
+        :'Không có sự kiện phản hồi liên kết với lượt chạy này'}
+      </div>
+    </div>
+  `;
+}
+
+function toggleTrace(hdr){
+  const body = hdr.nextElementSibling;
+  body.classList.toggle('open');
+}
+
+// ── Triggers ──────────────────────────────────────────────────────
+async function triggerRun(){
+  try{const r=await fetch(API+'/api/trigger-run',{method:'POST'});const d=await r.json();toast(d.status==='triggered'?'▶ Đã kích hoạt AI':'⚠ '+d.error);}catch{toast('⚠ API không phản hồi');}
+}
+async function triggerFeedback(){
+  try{await fetch(API+'/api/trigger-feedback',{method:'POST'});toast('↺ Đang đồng bộ...');setTimeout(()=>{if(S.tab===6)loadFeedback();if(S.tab===0)loadOverview();},5000);}catch{toast('⚠ API không phản hồi');}
+}
+
+// ── Init ──────────────────────────────────────────────────────────
+async function init(){
+  try{
+    const r = await fetch(API+'/api/dashboard/overview');
+    S.overview = await r.json();
+    renderTopKPIs({});
+    await loadTab(S.tab);
+  }catch(e){console.warn('Init:',e);}
+  connectWS();
+}
+
+init();
+</script>
+</body>
+</html>

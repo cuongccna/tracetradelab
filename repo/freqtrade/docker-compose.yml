@@ -1,0 +1,39 @@
+---
+# TraceTradeLab — Freqtrade Docker Compose
+# Khởi động: docker compose up -d
+# Dừng:      docker compose down
+# Logs:      docker compose logs -f
+
+services:
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    restart: unless-stopped
+    container_name: tracetrader-freqtrade
+    env_file:
+      - .env
+    environment:
+      SIGNAL_DB_PATH: /bridge/signals.db
+      TRACE_MIN_CONFIDENCE: "0.62"
+      # Secrets được inject từ .env — không hard-code ở đây
+      FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET}
+      FREQTRADE__API_SERVER__WS_TOKEN: ${FREQTRADE_WS_TOKEN}
+      FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_API_PASSWORD}
+      # Telegram tích hợp native của Freqtrade (tùy chọn, khác với telegram_reporter.py)
+      FREQTRADE__TELEGRAM__ENABLED: ${FREQTRADE_TELEGRAM_ENABLED:-false}
+      FREQTRADE__TELEGRAM__TOKEN: ${FREQTRADE_TELEGRAM_TOKEN:-}
+      FREQTRADE__TELEGRAM__CHAT_ID: ${FREQTRADE_TELEGRAM_CHAT_ID:-}
+    volumes:
+      - "./user_data:/freqtrade/user_data"
+      # Signal bridge: agent_runner ghi vào đây, Freqtrade đọc (read-only)
+      - "../signal_bridge:/bridge:ro"
+      # FreqUI tiếng Việt — ghi đè UI mặc định của Docker image
+      - "../freqUI/dist:/freqtrade/freqtrade/rpc/api_server/ui/installed:ro"
+    ports:
+      # Chỉ bind localhost — dùng reverse proxy nếu cần public
+      - "127.0.0.1:8080:8080"
+    command: >
+      trade
+      --logfile /freqtrade/user_data/logs/freqtrade.log
+      --db-url sqlite:////freqtrade/user_data/tradesv3.dryrun.sqlite
+      --config /freqtrade/user_data/config.json
+      --strategy AISignalStrategy

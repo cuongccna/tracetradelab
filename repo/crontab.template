@@ -1,0 +1,20 @@
+# TraceTradeLab — Crontab Template
+# Thêm vào crontab: crontab -e
+# Paste nội dung dưới đây (thay /opt/TraceTradeLab nếu cần)
+
+BASE=/opt/TraceTradeLab
+VENV=$BASE/.venv/bin/python
+DASH=$BASE/dashboard
+LOG=$BASE/logs
+
+# ── AI Signal Runner — chạy mỗi giờ lúc :02 ─────────────────────
+2 * * * * cd $DASH && $VENV agent_runner_v2.py --symbol BTC/USDT >> $LOG/cron.log 2>&1
+
+# ── Market Regime — chạy mỗi giờ lúc :05 ───────────────────────
+5 * * * * cd $DASH && $VENV market_regime.py >> $LOG/regime.log 2>&1
+
+# ── Signal Lifecycle — kiểm tra mỗi 5 phút ───────────────────────
+*/5 * * * * cd $DASH && $VENV signal_lifecycle.py >> $LOG/lifecycle.log 2>&1
+
+# ── Feedback Collector — chạy mỗi giờ lúc :32 ───────────────────
+32 * * * * cd $DASH && $VENV feedback_collector.py >> $LOG/feedback.log 2>&1
