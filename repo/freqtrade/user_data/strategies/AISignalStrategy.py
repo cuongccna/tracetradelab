@@ -17,6 +17,10 @@ DB_PATH = Path(os.getenv("SIGNAL_DB_PATH", "/bridge/signals.db"))
 MIN_CONFIDENCE = float(os.getenv("TRACE_MIN_CONFIDENCE", "0.65"))
 
 
+def _signal_symbol(pair: str) -> str:
+    return pair.split(":", 1)[0]
+
+
 def _read_signal(symbol: str) -> dict | None:
     if not DB_PATH.exists():
         log.warning("Signal database not found at %s", DB_PATH)
@@ -73,7 +77,7 @@ class AISignalStrategy(IStrategy):
         if dataframe.empty:
             return dataframe
 
-        signal = _read_signal(metadata["pair"])
+        signal = _read_signal(_signal_symbol(metadata["pair"]))
         if signal and signal["action"] == "BUY" and signal["confidence"] >= MIN_CONFIDENCE:
             # Filter: dead zone 22:00–01:00 UTC (volume thấp, spread rộng)
             last_ts = dataframe.index[-1]
@@ -101,14 +105,14 @@ class AISignalStrategy(IStrategy):
         if dataframe.empty:
             return dataframe
 
-        signal = _read_signal(metadata["pair"])
+        signal = _read_signal(_signal_symbol(metadata["pair"]))
         if signal is None:
             dataframe.loc[dataframe.index[-1], "exit_long"] = 1
             dataframe.loc[dataframe.index[-1], "exit_tag"] = "STALE_SIGNAL"
-        elif signal["action"] == "EXIT":
+        elif signal["action"] in ("SELL", "EXIT"):
             dataframe.loc[dataframe.index[-1], "exit_long"] = 1
             dataframe.loc[dataframe.index[-1], "exit_tag"] = (
-                f"AI_EXIT_{signal['confidence']:.2f}"
+                f"AI_{signal['action']}_{signal['confidence']:.2f}"
             )
         return dataframe
 
@@ -122,11 +126,11 @@ class AISignalStrategy(IStrategy):
         **kwargs,
     ) -> str | None:
         """Apply safety exits as soon as a new AI signal is stored."""
-        signal = _read_signal(pair)
+        signal = _read_signal(_signal_symbol(pair))
         if signal is None:
             return "STALE_SIGNAL"
-        if signal["action"] == "EXIT":
-            return f"AI_EXIT_{signal['confidence']:.2f}"
+        if signal["action"] in ("SELL", "EXIT"):
+            return f"AI_{signal['action']}_{signal['confidence']:.2f}"
         return None
 
     def custom_stoploss(
@@ -139,7 +143,7 @@ class AISignalStrategy(IStrategy):
         after_fill: bool,
         **kwargs,
     ) -> float | None:
-        signal = _read_signal(pair)
+        signal = _read_signal(_signal_symbol(pair))
         if signal and signal["stop_loss"] is not None:
             return -min(abs(signal["stop_loss"]), 0.03)
         return None

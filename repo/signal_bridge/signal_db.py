@@ -12,7 +12,46 @@ from pathlib import Path
 DEFAULT_DB_PATH = Path(__file__).resolve().parent / "signals.db"
 DB_PATH = Path(os.getenv("SIGNAL_DB_PATH", str(DEFAULT_DB_PATH)))
 SIGNAL_TTL_MINUTES = int(os.getenv("SIGNAL_TTL_MINUTES", "70"))
-VALID_ACTIONS = frozenset({"BUY", "HOLD", "EXIT"})
+VALID_ACTIONS = frozenset({"BUY", "SELL", "HOLD", "EXIT"})
+
+
+def _ensure_signal_actions_schema(conn: sqlite3.Connection) -> None:
+    """Upgrade older bridge DBs so futures dry-run can store SELL signals."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='signals'"
+    ).fetchone()
+    if not row or "CHECK(action IN ('BUY', 'HOLD', 'EXIT'))" not in (row[0] or ""):
+        return
+
+    conn.execute("ALTER TABLE signals RENAME TO signals_old")
+    conn.execute(
+        """
+        CREATE TABLE signals (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            symbol      TEXT NOT NULL,
+            timeframe   TEXT NOT NULL DEFAULT '1h',
+            action      TEXT NOT NULL CHECK(action IN ('BUY', 'SELL', 'HOLD', 'EXIT')),
+            confidence  REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+            stop_loss   REAL,
+            reason      TEXT,
+            raw_output  TEXT,
+            created_at  TEXT NOT NULL,
+            expires_at  TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO signals (
+            id, symbol, timeframe, action, confidence, stop_loss, reason,
+            raw_output, created_at, expires_at
+        )
+        SELECT id, symbol, timeframe, action, confidence, stop_loss, reason,
+               raw_output, created_at, expires_at
+        FROM signals_old
+        """
+    )
+    conn.execute("DROP TABLE signals_old")
 
 
 def init_db(db_path: Path | None = None) -> Path:
@@ -26,7 +65,7 @@ def init_db(db_path: Path | None = None) -> Path:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol      TEXT NOT NULL,
                 timeframe   TEXT NOT NULL DEFAULT '1h',
-                action      TEXT NOT NULL CHECK(action IN ('BUY', 'HOLD', 'EXIT')),
+                action      TEXT NOT NULL CHECK(action IN ('BUY', 'SELL', 'HOLD', 'EXIT')),
                 confidence  REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
                 stop_loss   REAL,
                 reason      TEXT,
@@ -36,6 +75,7 @@ def init_db(db_path: Path | None = None) -> Path:
             )
             """
         )
+        _ensure_signal_actions_schema(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_symbol_created "
             "ON signals(symbol, created_at DESC)"

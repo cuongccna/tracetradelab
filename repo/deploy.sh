@@ -87,6 +87,8 @@ sudo mkdir -p \
   "$TRACE_ROOT/freqtrade/user_data/strategies" \
   "$TRACE_ROOT/freqtrade/user_data/logs"
 sudo chown -R "$USER:$USER" "$TRACE_ROOT"
+# Freqtrade Docker chạy uid 1000 — cần quyền ghi vào user_data
+sudo chown -R 1000:1000 "$TRACE_ROOT/freqtrade/user_data"
 ok "Directories ready"
 
 log "Copy application files"
@@ -159,6 +161,7 @@ module.exports = {
     interpreter: "none",
     autorestart: true,
     max_restarts: 10,
+    restart_delay: 3000,
     env: {
       TRACE_ROOT: "$TRACE_ROOT",
       TRACE_DASHBOARD_DIR: "$TRACE_ROOT/dashboard",

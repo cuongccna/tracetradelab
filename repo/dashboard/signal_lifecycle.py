@@ -47,7 +47,7 @@ def _load_ft_pass() -> tuple[str, str, str]:
         _pass = _api.get("password", "")
     except Exception as _e:
         log.warning(f"Cannot load FT config.json: {_e}")
-    if not _pass or _pass == "overridden_by_environment":
+    if not _pass or _pass in ("overridden_by_environment", "CHANGE_ME"):
         try:
             for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
@@ -84,9 +84,35 @@ def ft_get(path: str) -> dict | list | None:
         return None
 
 
-def freqtrade_action(action: str) -> str:
-    """Map TradingAgents decisions to the long-only Freqtrade bridge action."""
-    return {"SELL": "EXIT"}.get((action or "").upper(), (action or "").upper())
+def _config_trading_mode() -> str:
+    try:
+        import json as _json
+        with open(FREQTRADE_CONFIG_PATH) as _f:
+            return str(_json.load(_f).get("trading_mode", "spot")).lower()
+    except Exception:
+        return "spot"
+
+
+def _is_futures_mode(bot_status: dict | None = None) -> bool:
+    if isinstance(bot_status, dict):
+        mode = bot_status.get("trading_mode") or bot_status.get("trading_mode.value")
+        if str(mode).lower() == "futures":
+            return True
+    return _config_trading_mode() == "futures"
+
+
+def freqtrade_action(action: str, *, allow_short: bool = False) -> str:
+    """Map TradingAgents decisions to Freqtrade action semantics."""
+    normalized = (action or "").upper()
+    if normalized == "SELL" and not allow_short:
+        return "EXIT"
+    return normalized
+
+
+def _same_pair(signal_symbol: str, ft_pair: str) -> bool:
+    signal_base = (signal_symbol or "").split(":", 1)[0]
+    ft_base = (ft_pair or "").split(":", 1)[0]
+    return bool(signal_base) and signal_base == ft_base
 
 
 def _parse_dt(value) -> datetime | None:
@@ -113,7 +139,8 @@ def validate_signal(signal: dict) -> tuple[bool, str]:
         return False, RejectionReason.LOW_CONFIDENCE
 
     # Action check
-    if freqtrade_action(signal.get("action")) not in ("BUY", "EXIT"):
+    allowed_actions = ("BUY", "SELL", "EXIT") if _is_futures_mode() else ("BUY", "EXIT")
+    if freqtrade_action(signal.get("action"), allow_short=_is_futures_mode()) not in allowed_actions:
         return False, RejectionReason.INVALID
 
     # Expiry check
@@ -140,13 +167,33 @@ def check_freqtrade_acceptance(signal: dict) -> tuple[str, str | None]:
     if not bot_status:
         return RejectionReason.FT_OFFLINE, "Freqtrade bot offline or unreachable"
 
-    # BUY opens a long. SELL/EXIT closes an existing long in the Freqtrade bridge.
+    allow_short = _is_futures_mode(bot_status)
+
+    # Spot: BUY opens a long, SELL/EXIT closes an existing long.
+    # Futures: BUY opens long or covers short; SELL opens short or closes long.
     open_trades = ft_get("/status")
     if isinstance(open_trades, list):
         pair = signal.get("symbol", "").replace("/", "/")
-        has_open_trade = any(trade.get("pair") == pair for trade in open_trades)
-        action = freqtrade_action(signal.get("action"))
+        matching_open_trades = [
+            trade for trade in open_trades if _same_pair(pair, trade.get("pair", ""))
+        ]
+        has_open_trade = bool(matching_open_trades)
+        action = freqtrade_action(signal.get("action"), allow_short=allow_short)
         if action == "BUY":
+            if allow_short:
+                sig_time = _parse_dt(signal.get("created_at"))
+                for trade in matching_open_trades:
+                    open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+                    if not trade.get("is_short") and sig_time and open_time and open_time >= sig_time:
+                        return "ACCEPTED", None
+            if has_open_trade:
+                return RejectionReason.OPEN_TRADE, f"Existing open trade for {pair}"
+        elif action == "SELL" and allow_short:
+            sig_time = _parse_dt(signal.get("created_at"))
+            for trade in matching_open_trades:
+                open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+                if trade.get("is_short") and sig_time and open_time and open_time >= sig_time:
+                    return "ACCEPTED", None
             if has_open_trade:
                 return RejectionReason.OPEN_TRADE, f"Existing open trade for {pair}"
         elif action == "EXIT" and not has_open_trade:
@@ -164,11 +211,11 @@ def match_signal_to_ft_trade(signal: dict, ft_trades: list) -> dict | None:
     if not sig_time:
         return None
     pair = signal.get("symbol", "").replace("/", "/")
-    action = freqtrade_action(signal.get("action"))
+    action = freqtrade_action(signal.get("action"), allow_short=_is_futures_mode())
 
     candidates = []
     for trade in ft_trades:
-        if trade.get("pair") != pair:
+        if not _same_pair(pair, trade.get("pair", "")):
             continue
         if action == "EXIT":
             close_time = _parse_dt(trade.get("close_date") or trade.get("close_date_utc"))
@@ -193,6 +240,21 @@ def match_signal_to_ft_trade(signal: dict, ft_trades: list) -> dict | None:
         return None
     candidates.sort(key=lambda x: x[0])
     return candidates[0][1]
+
+
+def _get_ft_trade_candidates() -> list:
+    """Return open and closed trades from Freqtrade APIs."""
+    candidates = []
+    open_trades = ft_get("/status")
+    if isinstance(open_trades, list):
+        candidates.extend(open_trades)
+
+    all_trades = ft_get("/trades?limit=50")
+    if isinstance(all_trades, dict):
+        all_trades = all_trades.get("trades", [])
+    if isinstance(all_trades, list):
+        candidates.extend(all_trades)
+    return candidates
 
 
 def process_signal(signal_id: int, signal: dict) -> dict:
@@ -232,18 +294,30 @@ def process_signal(signal_id: int, signal: dict) -> dict:
         log.info(f"Signal #{signal_id} not accepted by FT: {ft_reason}")
         return result
 
-    # Create execution record as ACCEPTED
-    exec_id = create_execution(signal_id, status="ACCEPTED")
+    # Create or reuse execution record as ACCEPTED
+    exec_id = None
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM executions
+                WHERE signal_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (signal_id,),
+            ).fetchone()
+            if row:
+                exec_id = int(row["id"] if hasattr(row, "keys") else row[0])
+    except Exception:
+        exec_id = None
+    if exec_id is None:
+        exec_id = create_execution(signal_id, status="ACCEPTED")
     update_signal_status(signal_id, "ACCEPTED")
     result["execution_id"] = exec_id
 
     # ── Step 3: Wait and match with FT trade ─────────────────────
     # Poll FT trades để tìm match (sẽ được gọi lại sau)
-    all_trades = ft_get("/trades?limit=50")
-    if isinstance(all_trades, dict):
-        all_trades = all_trades.get("trades", [])
-    if not all_trades:
-        all_trades = []
+    all_trades = _get_ft_trade_candidates()
 
     matched = match_signal_to_ft_trade(signal, all_trades)
     if matched:
@@ -281,13 +355,18 @@ def sync_all_pending_signals():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        # Lấy signals BUY/SELL chưa có execution
+        # Lấy signals BUY/SELL chưa executed, gồm cả signals đã ACCEPTED trước đó
         rows = conn.execute("""
             SELECT s.id, s.symbol, s.action, s.confidence,
                    s.created_at, s.expires_at, s.signal_status
             FROM signals s
             LEFT JOIN executions e ON e.signal_id = s.id
-            WHERE e.id IS NULL AND s.action IN ('BUY','SELL','EXIT')
+            WHERE s.action IN ('BUY','SELL','EXIT')
+              AND (
+                e.id IS NULL
+                OR e.status IN ('ACCEPTED', 'PENDING')
+                OR s.signal_status IN ('VALIDATED', 'ACCEPTED')
+              )
             ORDER BY s.created_at DESC LIMIT 100
         """).fetchall()
         conn.close()

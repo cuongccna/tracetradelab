@@ -50,7 +50,7 @@ def _load_ft_config() -> tuple[str, str, str]:
         _pass = api.get("password", "")
     except Exception as e:
         log.warning(f"Cannot read FT config.json: {e}")
-    if not _pass or _pass == "overridden_by_environment":
+    if not _pass or _pass in ("overridden_by_environment", "CHANGE_ME"):
         try:
             for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
@@ -220,9 +220,14 @@ def _parse_ft_dt(dt_str: str) -> datetime | None:
         return None
 
 
+def _normalize_pair(pair: str) -> str:
+    """Normalize Freqtrade futures pairs like BTC/USDT:USDT to signal symbol."""
+    return (pair or "").split(":", 1)[0].strip()
+
+
 def _find_matching_signal(pair: str, trade_open_dt: datetime) -> dict | None:
     """
-    Look for the BUY entry signal in DB that:
+    Look for the entry signal in DB that:
       - matches pair/symbol
       - was created 0–2 hours before the FT trade opened
       - has no signal_outcome recorded yet
@@ -234,6 +239,7 @@ def _find_matching_signal(pair: str, trade_open_dt: datetime) -> dict | None:
             trade_open_dt = trade_open_dt.replace(tzinfo=timezone.utc)
         window_start = (trade_open_dt - timedelta(hours=2)).isoformat()
         window_end   = trade_open_dt.isoformat()
+        symbol = _normalize_pair(pair)
 
         with get_conn() as conn:
             row = conn.execute("""
@@ -242,25 +248,32 @@ def _find_matching_signal(pair: str, trade_open_dt: datetime) -> dict | None:
                 FROM signals s
                 LEFT JOIN signal_outcomes so ON so.signal_id = s.id
                 WHERE s.symbol = ?
-                  AND s.action = 'BUY'
+                  AND s.action IN ('BUY', 'SELL')
                   AND s.created_at BETWEEN ? AND ?
                   AND so.id IS NULL
                 ORDER BY s.created_at DESC LIMIT 1
-            """, (pair, window_start, window_end)).fetchone()
+            """, (symbol, window_start, window_end)).fetchone()
         return dict(row) if row else None
     except Exception as e:
         log.error(f"_find_matching_signal error: {e}")
         return None
 
 
-def _outcome_already_recorded(ft_trade_id: int) -> bool:
+def _outcome_already_recorded(ft_trade_id: int, pair: str = "", closed_at: str = "") -> bool:
     """Return True if this FT trade ID already has a signal_outcomes row."""
     try:
         from db_v2 import get_conn
+        symbol = _normalize_pair(pair)
         with get_conn() as conn:
-            row = conn.execute(
-                "SELECT id FROM signal_outcomes WHERE ft_trade_id=?", (ft_trade_id,)
-            ).fetchone()
+            if symbol and closed_at:
+                row = conn.execute("""
+                    SELECT id FROM signal_outcomes
+                    WHERE ft_trade_id=? AND symbol=? AND closed_at=?
+                """, (ft_trade_id, symbol, closed_at)).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT id FROM signal_outcomes WHERE ft_trade_id=?", (ft_trade_id,)
+                ).fetchone()
         return row is not None
     except Exception:
         return False
@@ -288,8 +301,6 @@ def _record_outcome(signal_row: dict, ft_trade: dict):
         if ft_trade_id <= 0:
             log.debug("Skipping closed trade without a valid trade_id")
             return
-        if _outcome_already_recorded(ft_trade_id):
-            return
 
         # ── Extract fields from FT trade ──────────────────────────
         profit_pct   = float(ft_trade.get("profit_ratio", 0)) * 100
@@ -302,9 +313,14 @@ def _record_outcome(signal_row: dict, ft_trade: dict):
         duration_min = int(dur_s or 0) // 60 if ft_trade.get("trade_duration_s") else int(dur_s or 0)
 
         close_reason = str(
-            ft_trade.get("sell_reason") or ft_trade.get("close_reason") or "unknown"
+            ft_trade.get("sell_reason")
+            or ft_trade.get("exit_reason")
+            or ft_trade.get("close_reason")
+            or "unknown"
         ).lower()
         closed_at    = str(ft_trade.get("close_date") or "")
+        if _outcome_already_recorded(ft_trade_id, ft_trade.get("pair", ""), closed_at):
+            return
         sl_triggered = 1 if "stop_loss" in close_reason else 0
         tp_triggered = 1 if close_reason in ("roi", "take_profit", "trailing_stop_loss") else 0
 
@@ -384,7 +400,11 @@ def run_feedback_collection():
         ft_trade_id = int(ft_trade.get("trade_id", 0))
         if ft_trade_id <= 0:
             continue
-        if _outcome_already_recorded(ft_trade_id):
+        if _outcome_already_recorded(
+            ft_trade_id,
+            pair,
+            str(ft_trade.get("close_date") or ""),
+        ):
             continue
 
         open_dt = _parse_ft_dt(str(ft_trade.get("open_date", "")))

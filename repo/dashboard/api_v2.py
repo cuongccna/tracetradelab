@@ -10,7 +10,7 @@ import asyncio, json, logging, os, subprocess, shlex
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -74,6 +74,17 @@ try:
 except ImportError:
     BIAS_OK = False
 
+try:
+    from adaptive_risk import (
+        apply_proposal_to_freqtrade,
+        get_adaptive_dashboard,
+        record_outback_payload,
+        run_adaptive_workflow,
+    )
+    ADAPTIVE_OK = True
+except ImportError:
+    ADAPTIVE_OK = False
+
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -94,7 +105,7 @@ def _load_ft_pass() -> tuple[str, str, str]:
     except Exception as _e:
         log.warning(f"Cannot load FT config.json: {_e}")
     # If password is a placeholder, read from freqtrade .env
-    if not _pass or _pass == "overridden_by_environment":
+    if not _pass or _pass in ("overridden_by_environment", "CHANGE_ME"):
         try:
             for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
@@ -112,6 +123,17 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 class FreqtradeRestartRequest(BaseModel):
     timeframe: str
+
+
+class AdaptiveRunRequest(BaseModel):
+    symbol: str = "BTC/USDT"
+    market: str = "futures"
+    apply_config: bool = False
+    restart: bool = False
+
+
+class AdaptiveApplyRequest(BaseModel):
+    restart: bool = False
 
 
 # ─── WebSocket Manager ────────────────────────────────────────────
@@ -492,6 +514,73 @@ async def ft_config_restart(payload: FreqtradeRestartRequest):
         "live_dry_run": live.get("dry_run"),
         "state": live.get("state"),
     }
+
+
+# ─── Adaptive Risk / Outback ─────────────────────────────────────
+
+@app.post("/api/outback/freqtrade")
+async def ingest_freqtrade_outback(payload: dict[str, Any]):
+    """Receive outback telemetry from Freqtrade/automation and persist it."""
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    item = record_outback_payload(payload)
+    return {"status": "recorded", "outback": item}
+
+
+@app.post("/api/outback/freqtrade/collect")
+async def collect_freqtrade_outback():
+    """Pull current Freqtrade state and store it as an outback snapshot."""
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    live = await _freqtrade_live_config()
+    status = await ft_status()
+    profit = await ft_profit()
+    trades = await ft_trades(limit=100)
+    payload = {
+        "source": "freqtrade-pull",
+        "symbol": "BTC/USDT",
+        "market": live.get("trading_mode") or live.get("trading_mode.value") or "futures",
+        "timeframe": live.get("timeframe") or "1h",
+        "dry_run_wallet": live.get("dry_run_wallet") or _load_freqtrade_config().get("dry_run_wallet"),
+        "open_trades": status if isinstance(status, list) else [],
+        "profit_summary": profit if isinstance(profit, dict) else {},
+        "trade_history": trades.get("trades", []) if isinstance(trades, dict) else [],
+        "raw_live_config": live,
+    }
+    item = record_outback_payload(payload)
+    return {"status": "recorded", "outback": item}
+
+
+@app.get("/api/adaptive/risk")
+async def adaptive_risk_dashboard():
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    return get_adaptive_dashboard()
+
+
+@app.post("/api/adaptive/risk/run")
+async def adaptive_risk_run(payload: AdaptiveRunRequest):
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    result = run_adaptive_workflow(symbol=payload.symbol, market=payload.market)
+    if payload.apply_config:
+        result["apply"] = apply_proposal_to_freqtrade(result["id"])
+        if payload.restart:
+            result["restart"] = _restart_freqtrade_container()
+    return result
+
+
+@app.post("/api/adaptive/risk/apply/{proposal_id}")
+async def adaptive_risk_apply(proposal_id: int, payload: AdaptiveApplyRequest):
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    try:
+        result = apply_proposal_to_freqtrade(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if payload.restart:
+        result["restart"] = _restart_freqtrade_container()
+    return result
 
 
 # ─── Accuracy / Memory ───────────────────────────────────────────
