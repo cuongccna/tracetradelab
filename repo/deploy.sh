@@ -99,6 +99,8 @@ copy_dir "$REPO_DIR/tradingagents-src" "$TRACE_ROOT/tradingagents-src"
 cp "$REPO_DIR/freqtrade/docker-compose.yml" "$TRACE_ROOT/freqtrade/docker-compose.yml"
 cp "$REPO_DIR/freqtrade/user_data/strategies/AISignalStrategy.py" \
    "$TRACE_ROOT/freqtrade/user_data/strategies/AISignalStrategy.py"
+cp "$REPO_DIR/freqtrade/user_data/strategies/AISignalLongShortStrategy.py" \
+   "$TRACE_ROOT/freqtrade/user_data/strategies/AISignalLongShortStrategy.py"
 
 if [ ! -f "$TRACE_ROOT/.env" ]; then
   cp "$REPO_DIR/.env.example" "$TRACE_ROOT/.env"
