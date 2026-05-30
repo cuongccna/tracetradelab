@@ -23,10 +23,13 @@ services:
       FREQTRADE__API_SERVER__JWT_SECRET_KEY: ${FREQTRADE_JWT_SECRET}
       FREQTRADE__API_SERVER__WS_TOKEN: ${FREQTRADE_WS_TOKEN}
       FREQTRADE__API_SERVER__PASSWORD: ${FREQTRADE_API_PASSWORD}
-      # Telegram tích hợp native của Freqtrade (tùy chọn, khác với telegram_reporter.py)
-      FREQTRADE__TELEGRAM__ENABLED: ${FREQTRADE_TELEGRAM_ENABLED:-false}
-      FREQTRADE__TELEGRAM__TOKEN: ${FREQTRADE_TELEGRAM_TOKEN:-}
-      FREQTRADE__TELEGRAM__CHAT_ID: ${FREQTRADE_TELEGRAM_CHAT_ID:-}
+      # Telegram native của Freqtrade — phải quote để tránh YAML parse sai kiểu dữ liệu
+      # LƯU Ý: allowed_chat_ids là mảng → KHÔNG thể set qua env var
+      #         Phải điền thẳng vào config.json (xem hướng dẫn trong .env.example)
+      FREQTRADE__TELEGRAM__ENABLED: "${FREQTRADE_TELEGRAM_ENABLED:-false}"
+      FREQTRADE__TELEGRAM__TOKEN: "${FREQTRADE_TELEGRAM_TOKEN:-}"
+      FREQTRADE__TELEGRAM__CHAT_ID: "${FREQTRADE_TELEGRAM_CHAT_ID:-}"
+      FREQTRADE__TELEGRAM__ALLOW_CUSTOM_MESSAGES: "true"
     volumes:
       - "./user_data:/freqtrade/user_data"
       # Signal bridge: agent_runner ghi vào đây, Freqtrade đọc (read-only)

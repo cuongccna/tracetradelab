@@ -50,7 +50,9 @@
   "telegram": {
     "enabled": false,
     "token": "",
-    "chat_id": ""
+    "chat_id": "",
+    "allow_custom_messages": true,
+    "allowed_chat_ids": []
   },
   "api_server": {
     "enabled": true,

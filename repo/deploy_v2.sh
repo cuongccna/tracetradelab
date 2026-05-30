@@ -114,6 +114,38 @@ if [ ! -f "$FREQTRADE_DIR/user_data/config.json" ]; then
     fi
   done
 fi
+
+# ── Tự động điền allowed_chat_ids trong config.json từ .env ───────────────
+# (allowed_chat_ids là mảng — Freqtrade KHÔNG hỗ trợ override qua env var)
+_tg_chat_id=""
+if [ -f "$FREQTRADE_DIR/.env" ]; then
+  _tg_chat_id="$(grep -E '^FREQTRADE_TELEGRAM_CHAT_ID=' "$FREQTRADE_DIR/.env" | tail -1 | cut -d= -f2- | tr -d '[:space:]')"
+fi
+if [ -n "$_tg_chat_id" ] && [ -f "$FREQTRADE_DIR/user_data/config.json" ]; then
+  # Kiểm tra xem chat_id đã có trong allowed_chat_ids chưa
+  if ! grep -q "\"$_tg_chat_id\"" "$FREQTRADE_DIR/user_data/config.json" 2>/dev/null || \
+     grep -q '"allowed_chat_ids": \[\]' "$FREQTRADE_DIR/user_data/config.json" 2>/dev/null; then
+    python3 - "$FREQTRADE_DIR/user_data/config.json" "$_tg_chat_id" <<'PYEOF'
+import sys, json
+cfg_path, chat_id = sys.argv[1], sys.argv[2]
+with open(cfg_path) as f:
+    cfg = json.load(f)
+tg = cfg.setdefault('telegram', {})
+ids = tg.get('allowed_chat_ids', [])
+if chat_id not in [str(x) for x in ids]:
+    ids.append(chat_id)
+tg['allowed_chat_ids'] = ids
+with open(cfg_path, 'w') as f:
+    json.dump(cfg, f, indent=2, ensure_ascii=False)
+print(f"[deploy_v2] allowed_chat_ids updated: {ids}")
+PYEOF
+    ok "allowed_chat_ids in config.json updated with chat_id=$_tg_chat_id"
+  else
+    ok "allowed_chat_ids already contains chat_id=$_tg_chat_id"
+  fi
+else
+  [ -z "$_tg_chat_id" ] && warn "FREQTRADE_TELEGRAM_CHAT_ID chưa set → bỏ qua update allowed_chat_ids"
+fi
 ok "Env files checked"
 
 # ── Python venv ────────────────────────────────────────────────────────────
