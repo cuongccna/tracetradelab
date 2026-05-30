@@ -163,9 +163,6 @@ tr:hover td{background:var(--s2)}
 .status-list{font-size:10px;line-height:2;color:var(--mu)}
 .status-list strong{color:var(--tx)}
 .link-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-/* Adaptive Risk */
-.ad-reasoning-box{font-size:10px;white-space:pre-wrap;line-height:1.7;max-height:360px;overflow-y:auto;overflow-x:auto;word-break:break-word;color:var(--tx)}
-#t9 .link-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 
 @media (max-width: 900px){
   html,body{font-size:11px;overflow:hidden}
@@ -200,10 +197,6 @@ tr:hover td{background:var(--s2)}
   .select,.input{height:36px;font-size:12px}
   .toggle-line{height:auto;min-height:36px;align-items:flex-start}
   .link-row .btn{flex:1 1 145px}
-  /* Adaptive Risk mobile */
-  .ad-reasoning-box{max-height:220px;font-size:9px}
-  #t9 .link-row{grid-template-columns:1fr 1fr}
-  #t9 .link-row .btn{flex:none;width:100%;min-height:36px}
   #t7>div{grid-template-columns:1fr!important;height:auto!important}
   #trace-runs{height:auto!important;max-height:220px}
   #trace-detail{overflow-y:visible!important}
@@ -217,8 +210,6 @@ tr:hover td{background:var(--s2)}
   .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
   .grid5,.grid4,.grid3{grid-template-columns:1fr}
   .compare-grid{grid-template-columns:1fr}
-  .ad-reasoning-box{max-height:160px}
-  #t9 .link-row{grid-template-columns:1fr}
   .tab{font-size:9px;padding:8px 9px}
   .content{padding:8px}
   .f-step{align-items:flex-start}
@@ -250,6 +241,12 @@ tr:hover td{background:var(--s2)}
   <div class="top-r">
     <div style="display:flex;align-items:center;gap:4px"><div class="wsd" id="wsd"></div><span id="ws-lbl">--</span></div>
     <span id="clk">--:--:--</span>
+    <select class="select" id="run-symbol" style="width:auto;height:26px;padding:0 6px;font-size:10px" onchange="$('pair-chip').textContent=this.value">
+      <option value="BTC/USDT">BTC/USDT</option>
+      <option value="ETH/USDT">ETH/USDT</option>
+      <option value="BNB/USDT">BNB/USDT</option>
+      <option value="SOL/USDT">SOL/USDT</option>
+    </select>
     <button class="btn" onclick="triggerRun()">▶ Chạy AI</button>
     <button class="btn" onclick="triggerFeedback()">↺ Đồng bộ</button>
   </div>
@@ -265,8 +262,8 @@ tr:hover td{background:var(--s2)}
   <div class="tab" onclick="go(5)">Thị trường</div>
   <div class="tab" onclick="go(6)">Học phản hồi</div>
   <div class="tab" onclick="go(7)">Lịch sử chạy</div>
-  <div class="tab" onclick="go(8)">Freqtrade</div>
-  <div class="tab" onclick="go(9)">Adaptive Risk</div>
+  <div class="tab" onclick="go(8)">Bot Freqtrade</div>
+  <div class="tab" onclick="go(9)">Quản lý Rủi ro</div>
 </div>
 
 <!-- CONTENT -->
@@ -498,7 +495,15 @@ tr:hover td{background:var(--s2)}
           <div class="sh">Cấu hình chạy Freqtrade</div>
           <div class="card">
             <div class="control-row">
-              <div class="control-label">Timeframe</div>
+              <div class="control-label">Chế độ thị trường</div>
+              <select class="select" id="ft-market-mode">
+                <option value="futures">Futures (Long + Short)</option>
+                <option value="spot">Spot (Long only)</option>
+              </select>
+              <button class="btn" style="margin-left:8px" onclick="switchMarketMode()">⇄ Đổi Mode</button>
+            </div>
+            <div class="control-row">
+              <div class="control-label">Khung thời gian</div>
               <select class="select" id="ft-timeframe"></select>
             </div>
             <div class="control-row">
@@ -509,21 +514,29 @@ tr:hover td{background:var(--s2)}
               </label>
             </div>
             <div class="link-row">
-              <button class="btn" onclick="restartFreqtrade()">↻ Restart áp dụng</button>
+              <button class="btn" onclick="restartFreqtrade()">↻ Restart áp dụng TF</button>
               <button class="btn" onclick="loadFreqtrade()">↺ Tải lại trạng thái</button>
               <button class="btn" onclick="openFreqtradeUI()">↗ Mở Freqtrade UI</button>
             </div>
             <div style="font-size:10px;color:var(--mu2);margin-top:10px;line-height:1.8">
-              Restart sẽ backup config, ghi timeframe mới, ép <strong>dry_run=true</strong>, rồi restart container Freqtrade.
+              <strong>⇄ Đổi Mode</strong> sẽ backup config, đổi trading_mode/strategy/pairs, ép <strong>dry_run=true</strong>, rồi tự động restart Freqtrade qua <code>docker compose restart</code>.<br>
+              Restart áp dụng TF chỉ thay đổi timeframe, không đổi mode.<br>
+              <br>
+              <strong style="color:#e8a838">⚠ Nếu restart tự động thất bại</strong> — SSH vào server và chạy thủ công:<br>
+              <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;user-select:all">cd /opt/tracetrader/freqtrade &amp;&amp; docker compose restart freqtrade</code><br>
+              Hoặc nếu dùng systemd:<br>
+              <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;user-select:all">sudo systemctl restart freqtrade</code><br>
+              Sau khi restart, nhấn <strong>↺ Tải lại trạng thái</strong> để xác nhận Market Mode đã đổi thành công.
             </div>
           </div>
         </div>
         <div class="section">
           <div class="sh">Trạng thái live</div>
           <div class="grid3">
-            <div class="card"><div class="cv" id="ft-live-tf">--</div><div class="cl">Timeframe live</div></div>
-            <div class="card"><div class="cv" id="ft-live-dry">--</div><div class="cl">Dry-run live</div></div>
-            <div class="card"><div class="cv" id="ft-state">--</div><div class="cl">Bot state</div></div>
+            <div class="card"><div class="cv" id="ft-live-mode">--</div><div class="cl">Chế độ thị trường</div></div>
+            <div class="card"><div class="cv" id="ft-live-tf">--</div><div class="cl">Khung thời gian</div></div>
+            <div class="card"><div class="cv" id="ft-live-dry">--</div><div class="cl">Chế độ thử nghiệm</div></div>
+            <div class="card"><div class="cv" id="ft-state">--</div><div class="cl">Trạng thái Bot</div></div>
           </div>
         </div>
       </div>
@@ -557,10 +570,10 @@ tr:hover td{background:var(--s2)}
   <div id="t9" style="display:none">
     <div class="section">
       <div class="grid4">
-        <div class="card"><div class="cv" id="ad-balance">--</div><div class="cl">Current Balance</div></div>
-        <div class="card"><div class="cv" id="ad-dd">--%</div><div class="cl">Drawdown</div></div>
+        <div class="card"><div class="cv" id="ad-balance">--</div><div class="cl">Số dư hiện tại</div></div>
+        <div class="card"><div class="cv" id="ad-dd">--%</div><div class="cl">Sụt giảm vốn</div></div>
         <div class="card"><div class="cv" id="ad-stake">--</div><div class="cl">Stake đề xuất</div></div>
-        <div class="card"><div class="cv" id="ad-status">--</div><div class="cl">Safety Status</div></div>
+        <div class="card"><div class="cv" id="ad-status">--</div><div class="cl">Trạng thái an toàn</div></div>
       </div>
       <div class="link-row">
         <button class="btn" onclick="collectOutback()">↺ Thu outback</button>
@@ -581,15 +594,15 @@ tr:hover td{background:var(--s2)}
         <div class="section">
           <div class="sh">Log đề xuất gần đây</div>
           <table>
-            <thead><tr><th>ID</th><th>Market</th><th>Sample</th><th>Status</th><th>Applied</th></tr></thead>
+            <thead><tr><th>ID</th><th>Thị trường</th><th>Mẫu</th><th>Trạng thái</th><th>Đã áp dụng</th></tr></thead>
             <tbody id="ad-log"></tbody>
           </table>
         </div>
       </div>
       <div>
         <div class="section">
-          <div class="sh">Reasoning Agent A / B / Manager</div>
-          <div id="ad-reasoning" class="card ad-reasoning-box">Chưa có proposal.</div>
+          <div class="sh">Lý giải Agent A / B / Quản lý</div>
+          <div id="ad-reasoning" class="card" style="font-size:10px;white-space:pre-wrap;line-height:1.7;max-height:360px;overflow-y:auto;color:var(--tx)">Chưa có proposal.</div>
         </div>
         <div class="section">
           <div class="sh">Outback mới nhất</div>
@@ -1115,7 +1128,16 @@ async function loadFreqtrade(){
     const opts = d.available_timeframes||['1m','5m','15m','30m','1h','4h','1d'];
     sel.innerHTML = opts.map(tf=>`<option value="${tf}" ${tf===(d.timeframe||d.live_timeframe)?'selected':''}>${tf}</option>`).join('');
   }
+  // Market mode select
+  const msel = $('ft-market-mode');
+  if(msel){
+    const curMode = d.trading_mode || 'futures';
+    msel.value = curMode;
+  }
   $('ft-dryrun').checked = true;
+  const liveMode = d.live_trading_mode || d.trading_mode || '--';
+  $('ft-live-mode').textContent = liveMode.toUpperCase();
+  $('ft-live-mode').className = 'cv ' + (liveMode==='futures' ? 'neu' : 'pos');
   $('ft-live-tf').textContent = d.live_timeframe || d.timeframe || '--';
   $('ft-live-dry').textContent = d.live_dry_run===true || d.dry_run===true ? 'TRUE' : 'FALSE';
   $('ft-live-dry').className = 'cv '+((d.live_dry_run===true || d.dry_run===true)?'pos':'neg');
@@ -1128,6 +1150,70 @@ async function loadFreqtrade(){
   const ui = publicFreqtradeUrl(d.ui_url||'http://127.0.0.1:8080');
   $('ft-ui-url').textContent = ui;
   $('ft-dashboard-url').textContent = location.origin;
+}
+
+async function switchMarketMode(){
+  const mode = $('ft-market-mode').value;
+  const modeLabel = mode === 'futures' ? 'FUTURES (Long+Short, AISignalLongShortStrategy)' : 'SPOT (Long only, AISignalStrategy)';
+  $('ft-restart-log').textContent = `⏳ Đang kiểm tra điều kiện trước khi đổi sang ${mode.toUpperCase()}...`;
+  // ── Preflight check ──────────────────────────────────────────
+  try{
+    const pf = await fetch(API+'/api/freqtrade/market-mode/preflight');
+    const pd = await pf.json();
+    if(pd.agent_running){
+      $('ft-restart-log').textContent = `🚫 Không thể đổi mode:\n${pd.agent_reason}\n\nHãy chờ TradingAgents hoàn tất rồi thử lại.`;
+      toast('⚠ TradingAgents đang chạy — không thể đổi mode', 6000);
+      return;
+    }
+    if(pd.open_trades > 0){
+      const tradeList = (pd.open_trade_list||[]).join('\n  ');
+      $('ft-restart-log').textContent = `🚫 Không thể đổi mode:\nCòn ${pd.open_trades} lệnh đang mở:\n  ${tradeList}\n\nHãy đóng tất cả lệnh trong Freqtrade rồi thử lại.`;
+      toast(`⚠ Còn ${pd.open_trades} lệnh mở — không thể đổi mode`, 6000);
+      return;
+    }
+  }catch(e){
+    $('ft-restart-log').textContent = `⚠ Không thể kiểm tra điều kiện: ${e.message}\nCó thể API đang offline.`;
+    toast('⚠ Preflight check lỗi', 5000);
+    return;
+  }
+  // ── Confirm ──────────────────────────────────────────────────
+  if(!confirm(`✅ Điều kiện OK.\n\nĐổi sang ${modeLabel}?\n\nSẽ:\n• Backup config\n• Đổi trading_mode + strategy + pairs\n• Ép dry_run=true\n• Restart Freqtrade container`)) return;
+  $('ft-restart-log').textContent = `⏳ Đang đổi sang ${mode.toUpperCase()}...`;
+  try{
+    const r = await fetch(API+'/api/freqtrade/config/market-mode',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mode})
+    });
+    const d = await r.json();
+    if(!r.ok){
+      const detail = d.detail || d;
+      const msg = typeof detail === 'object'
+        ? (detail.message || JSON.stringify(detail))
+        : String(detail);
+      $('ft-restart-log').textContent = `🚫 Lỗi đổi mode:\n${msg}`;
+      toast('⚠ Đổi market mode lỗi', 5000);
+      return;
+    }
+    if(d.status === 'no_change'){
+      $('ft-restart-log').textContent = `ℹ️ ${d.message}`;
+      toast(`ℹ️ ${d.message}`);
+      return;
+    }
+    $('ft-restart-log').textContent =
+      `✅ OK: ${d.old_mode?.toUpperCase()||'--'} → ${d.new_mode?.toUpperCase()}\n`+
+      `Strategy: ${d.strategy}\n`+
+      `Pairs: ${(d.pair_whitelist||[]).join(', ')}\n`+
+      `dry_run: true\n`+
+      `state: ${d.state||'--'}\n`+
+      `backup: ${d.backup}\n`+
+      `${d.restart?.stdout||''}`;
+    toast(`⇄ Freqtrade đã đổi sang ${d.new_mode?.toUpperCase()}`);
+    setTimeout(loadFreqtrade, 4000);
+  }catch(e){
+    $('ft-restart-log').textContent = `🚫 Lỗi đổi mode: ${e.message}`;
+    toast('⚠ Đổi market mode lỗi', 5000);
+  }
 }
 
 async function restartFreqtrade(){
@@ -1193,28 +1279,28 @@ function renderAdaptive(){
     <td>${x.market}</td>
     <td>${x.sample_size}</td>
     <td><span class="${x.safety_status==='BLOCKED'?'neg':'pos'}">${x.safety_status}</span></td>
-    <td>${x.applied?'YES':'NO'}</td>
+    <td>${x.applied?'CÓ':'KHÔNG'}</td>
   </tr>`).join('') || '<tr><td colspan="5" class="empty">Chưa có adaptive proposal</td></tr>';
 
   if(p){
     const q = p.quant_proposal || {};
     const c = p.risk_critique || {};
     $('ad-reasoning').textContent =
-      `Agent A:\n${q.reasoning||''}\n\n`+
-      `Evidence:\n${JSON.stringify(q.evidence||{}, null, 2)}\n\n`+
-      `Agent B:\n${c.decision||'--'} | flags: ${(c.risk_flags||[]).join(', ')||'none'}\n${c.reasoning||''}\n\n`+
-      `Manager:\n${p.safety_status}\n${p.manager_reasoning||''}`;
+      `[Agent A - Phân tích định lượng]:\n${q.reasoning||''}\n\n`+
+      `[Bằng chứng]:\n${JSON.stringify(q.evidence||{}, null, 2)}\n\n`+
+      `[Agent B - Phản biện rủi ro]:\n${c.decision||'--'} | cờ: ${(c.risk_flags||[]).join(', ')||'không có'}\n${c.reasoning||''}\n\n`+
+      `[Quản lý]:\n${p.safety_status}\n${p.manager_reasoning||''}`;
   } else {
     $('ad-reasoning').textContent = 'Chưa có proposal.';
   }
   $('ad-outback').innerHTML = out.id ? `
     ID: <strong>#${out.id}</strong><br>
-    Symbol: <strong>${esc(out.symbol)}</strong><br>
-    Market: <strong>${esc(out.market)}</strong><br>
-    Timeframe: <strong>${esc(out.timeframe)}</strong><br>
-    Open trades: <strong>${out.open_trade_count||0}</strong><br>
-    Closed trades: <strong>${out.closed_trade_count||0}</strong><br>
-    Created: <strong>${fmtAge(out.created_at)}</strong>
+    Cặp giao dịch: <strong>${esc(out.symbol)}</strong><br>
+    Thị trường: <strong>${esc(out.market)}</strong><br>
+    Khung thời gian: <strong>${esc(out.timeframe)}</strong><br>
+    Lệnh mở: <strong>${out.open_trade_count||0}</strong><br>
+    Lệnh đã đóng: <strong>${out.closed_trade_count||0}</strong><br>
+    Tạo lúc: <strong>${fmtAge(out.created_at)}</strong>
   ` : 'Chưa có outback.';
 }
 
@@ -1254,7 +1340,8 @@ async function runAdaptive(applyConfig){
 
 // ── Triggers ──────────────────────────────────────────────────────
 async function triggerRun(){
-  try{const r=await fetch(API+'/api/trigger-run',{method:'POST'});const d=await r.json();toast(d.status==='triggered'?'▶ Đã kích hoạt AI':'⚠ '+d.error);}catch{toast('⚠ API không phản hồi');}
+  const symbol = ($('run-symbol')?.value || 'BTC/USDT');
+  try{const r=await fetch(API+'/api/trigger-run?symbol='+encodeURIComponent(symbol),{method:'POST'});const d=await r.json();toast(d.status==='triggered'?'▶ Đã kích hoạt AI ('+symbol+')':'⚠ '+d.error);}catch{toast('⚠ API không phản hồi');}
 }
 async function triggerFeedback(){
   try{await fetch(API+'/api/trigger-feedback',{method:'POST'});toast('↺ Đang đồng bộ...');setTimeout(()=>{if(S.tab===6)loadFeedback();if(S.tab===0)loadOverview();},5000);}catch{toast('⚠ API không phản hồi');}

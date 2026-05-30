@@ -125,6 +125,10 @@ class FreqtradeRestartRequest(BaseModel):
     timeframe: str
 
 
+class MarketModeRequest(BaseModel):
+    mode: str  # "spot" or "futures"
+
+
 class AdaptiveRunRequest(BaseModel):
     symbol: str = "BTC/USDT"
     market: str = "futures"
@@ -477,8 +481,11 @@ async def ft_config():
     return {
         "timeframe": local.get("timeframe", "1h"),
         "dry_run": bool(local.get("dry_run", True)),
+        "trading_mode": local.get("trading_mode", "futures"),
+        "margin_mode": local.get("margin_mode", ""),
         "live_timeframe": live.get("timeframe"),
         "live_dry_run": live.get("dry_run"),
+        "live_trading_mode": live.get("trading_mode"),
         "state": live.get("state"),
         "strategy": live.get("strategy"),
         "available_timeframes": list(VALID_TIMEFRAMES),
@@ -512,6 +519,149 @@ async def ft_config_restart(payload: FreqtradeRestartRequest):
         "restart": restart,
         "live_timeframe": live.get("timeframe"),
         "live_dry_run": live.get("dry_run"),
+        "state": live.get("state"),
+    }
+
+
+def _check_agent_running() -> dict:
+    """Return {running: bool, reason: str}.
+    Uses two signals:
+    1. flock non-blocking try on logs/runner.lock  (cron lock mechanism)
+    2. pgrep scan for agent_runner_v2.py process
+    """
+    import fcntl
+    lock_path = LOG_DIR / "runner.lock"
+    # Signal 1 — try to acquire the same flock the cron script uses
+    try:
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o664)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)  # release immediately — nobody holds it
+        except BlockingIOError:
+            os.close(fd)
+            return {"running": True, "reason": "runner.lock đang bị giữ (cron agent đang chạy)"}
+        os.close(fd)
+    except OSError:
+        pass  # can't check lock — fall through to process scan
+
+    # Signal 2 — scan process list (exclude self)
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "agent_runner_v2.py"],
+            capture_output=True, text=True, timeout=5
+        )
+        my_pid = str(os.getpid())
+        pids = [p.strip() for p in result.stdout.splitlines() if p.strip() and p.strip() != my_pid]
+        if pids:
+            return {"running": True, "reason": f"TradingAgents đang chạy (PID: {', '.join(pids)})"}
+    except Exception:
+        pass
+
+    return {"running": False, "reason": ""}
+
+
+async def _check_open_trades() -> dict:
+    """Return {has_open: bool, count: int, trades: list[str]}.
+    Calls FT /status endpoint."""
+    try:
+        data = await _ft("/status")
+        if isinstance(data, list) and len(data) > 0:
+            pairs = [f"{t.get('pair')} ({'short' if t.get('is_short') else 'long'})" for t in data]
+            return {"has_open": True, "count": len(data), "trades": pairs}
+        return {"has_open": False, "count": 0, "trades": []}
+    except Exception as exc:
+        # Cannot reach FT — treat as safe to proceed but warn
+        return {"has_open": False, "count": 0, "trades": [], "warning": str(exc)}
+
+
+@app.get("/api/freqtrade/market-mode/preflight")
+async def ft_market_mode_preflight():
+    """Check preconditions before switching market mode."""
+    agent = _check_agent_running()
+    trades = await _check_open_trades()
+    can_switch = not agent["running"] and not trades["has_open"]
+    return {
+        "can_switch": can_switch,
+        "agent_running": agent["running"],
+        "agent_reason": agent["reason"],
+        "open_trades": trades["count"],
+        "open_trade_list": trades["trades"],
+        "open_trades_warning": trades.get("warning", ""),
+    }
+
+
+@app.post("/api/freqtrade/config/market-mode")
+async def ft_switch_market_mode(payload: MarketModeRequest):
+    """Switch Freqtrade between spot and futures mode, then restart container.
+    Guards:
+      - Block if TradingAgents agent_runner_v2.py is currently running.
+      - Block if Freqtrade has any open trades.
+    """
+    mode = payload.mode.strip().lower()
+    if mode not in ("spot", "futures"):
+        raise HTTPException(400, f"Invalid mode: {mode!r}. Must be 'spot' or 'futures'.")
+
+    # ── Guard 1: TradingAgents không được đang chạy ──────────────
+    agent = _check_agent_running()
+    if agent["running"]:
+        raise HTTPException(409, {
+            "error": "agent_running",
+            "message": f"Không thể đổi mode: {agent['reason']}. Hãy chờ TradingAgents hoàn tất rồi thử lại.",
+            "reason": agent["reason"],
+        })
+
+    # ── Guard 2: Freqtrade không được có lệnh đang mở ────────────
+    trades = await _check_open_trades()
+    if trades["has_open"]:
+        trade_list = ", ".join(trades["trades"])
+        raise HTTPException(409, {
+            "error": "open_trades",
+            "message": f"Không thể đổi mode: còn {trades['count']} lệnh đang mở ({trade_list}). Hãy đóng tất cả lệnh trước.",
+            "open_trades": trades["count"],
+            "trade_list": trades["trades"],
+        })
+
+    config = _load_freqtrade_config()
+    old_mode = config.get("trading_mode", "futures")
+
+    if mode == old_mode:
+        return {"status": "no_change", "mode": mode, "message": f"Đã đang chạy ở chế độ {mode.upper()}."}
+
+    if mode == "futures":
+        config["trading_mode"] = "futures"
+        config["margin_mode"] = "isolated"
+        config["strategy"] = "AISignalLongShortStrategy"
+        for section in ("ccxt_config", "ccxt_async_config"):
+            config.setdefault("exchange", {}).setdefault(section, {}).setdefault("options", {})["defaultType"] = "future"
+        whitelist = config.get("exchange", {}).get("pair_whitelist", [])
+        config["exchange"]["pair_whitelist"] = [
+            p if ":" in p else p + ":USDT" for p in whitelist
+        ]
+    else:  # spot
+        config["trading_mode"] = "spot"
+        config.pop("margin_mode", None)
+        config["strategy"] = "AISignalStrategy"
+        for section in ("ccxt_config", "ccxt_async_config"):
+            config.setdefault("exchange", {}).setdefault(section, {}).setdefault("options", {})["defaultType"] = "spot"
+        whitelist = config.get("exchange", {}).get("pair_whitelist", [])
+        config["exchange"]["pair_whitelist"] = [
+            p.split(":")[0] if ":" in p else p for p in whitelist
+        ]
+
+    config["dry_run"] = True
+    backup = _write_freqtrade_config(config)
+    restart = _restart_freqtrade_container()
+    live = await _freqtrade_live_config()
+    return {
+        "status": "restarted",
+        "old_mode": old_mode,
+        "new_mode": mode,
+        "strategy": config["strategy"],
+        "pair_whitelist": config["exchange"]["pair_whitelist"],
+        "dry_run": True,
+        "backup": backup,
+        "restart": restart,
+        "live_trading_mode": live.get("trading_mode"),
         "state": live.get("state"),
     }
 

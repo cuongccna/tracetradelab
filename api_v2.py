@@ -2,22 +2,46 @@
 api_v2.py — FastAPI v2 với đầy đủ 9 dashboard endpoints theo spec
 Thay thế api.py
 
-Path: /opt/tracetrader/dashboard/api_v2.py
+Path: /opt/TraceTradeLab/dashboard/api_v2.py
 Chạy: uvicorn api_v2:app --host 0.0.0.0 --port 8888
 """
 
-import asyncio, json, logging, subprocess, shlex
+import asyncio, json, logging, os, subprocess, shlex
 import httpx
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 import sys
-sys.path.insert(0, "/opt/tracetrader/dashboard")
+
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+LOG_DIR = Path(os.getenv("TRACE_LOG_DIR", str(TRACE_ROOT / "logs")))
+VENV_PYTHON = os.getenv("TRACE_VENV_PYTHON", str(TRACE_ROOT / ".venv/bin/python"))
+FREQTRADE_CONFIG_PATH = Path(
+    os.getenv("FREQTRADE_CONFIG_PATH", str(TRACE_ROOT / "freqtrade/user_data/config.json"))
+)
+FREQTRADE_ENV_PATH = Path(
+    os.getenv("FREQTRADE_ENV_PATH", str(TRACE_ROOT / "freqtrade/.env"))
+)
+FREQTRADE_COMPOSE_FILE = Path(
+    os.getenv("FREQTRADE_COMPOSE_FILE", str(TRACE_ROOT / "freqtrade/docker-compose.yml"))
+)
+FREQTRADE_SERVICE = os.getenv("FREQTRADE_SERVICE", "freqtrade")
+FREQTRADE_UI_URL = os.getenv("FREQTRADE_UI_URL", "http://127.0.0.1:8080")
+VALID_TIMEFRAMES = (
+    "1m", "3m", "5m", "15m", "30m",
+    "1h", "2h", "4h", "6h", "8h", "12h",
+    "1d",
+)
+
+sys.path.insert(0, str(DASHBOARD_DIR))
 
 from db_v2 import (
     init_db, get_recent_runs, get_run_messages, get_signal_history,
@@ -50,6 +74,17 @@ try:
 except ImportError:
     BIAS_OK = False
 
+try:
+    from adaptive_risk import (
+        apply_proposal_to_freqtrade,
+        get_adaptive_dashboard,
+        record_outback_payload,
+        run_adaptive_workflow,
+    )
+    ADAPTIVE_OK = True
+except ImportError:
+    ADAPTIVE_OK = False
+
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
@@ -61,8 +96,7 @@ def _load_ft_pass() -> tuple[str, str, str]:
     _user = "admin"
     _pass = ""
     try:
-        cfg_path = Path("/opt/tracetrader/freqtrade/user_data/config.json")
-        with open(cfg_path) as _f:
+        with open(FREQTRADE_CONFIG_PATH) as _f:
             _cfg = _json.load(_f)
         _api = _cfg.get("api_server", {})
         _url = f"http://127.0.0.1:{_api.get('listen_port', 8080)}/api/v1"
@@ -71,10 +105,9 @@ def _load_ft_pass() -> tuple[str, str, str]:
     except Exception as _e:
         log.warning(f"Cannot load FT config.json: {_e}")
     # If password is a placeholder, read from freqtrade .env
-    if not _pass or _pass == "overridden_by_environment":
+    if not _pass or _pass in ("overridden_by_environment", "CHANGE_ME"):
         try:
-            env_path = Path("/opt/tracetrader/freqtrade/.env")
-            for line in env_path.read_text().splitlines():
+            for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
                     _pass = line.split("=", 1)[1].strip()
                     break
@@ -83,11 +116,28 @@ def _load_ft_pass() -> tuple[str, str, str]:
     return _url, _user, _pass
 
 FREQTRADE_URL, FREQTRADE_USER, FREQTRADE_PASS = _load_ft_pass()
-VENV_PYTHON    = "/opt/tracetrader/tradingagents-src/venv/bin/python"
-DASHBOARD_DIR  = "/opt/tracetrader/dashboard"
 
 app = FastAPI(title="TraceTrader Lab API v2", version="2.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+class FreqtradeRestartRequest(BaseModel):
+    timeframe: str
+
+
+class MarketModeRequest(BaseModel):
+    mode: str  # "spot" or "futures"
+
+
+class AdaptiveRunRequest(BaseModel):
+    symbol: str = "BTC/USDT"
+    market: str = "futures"
+    apply_config: bool = False
+    restart: bool = False
+
+
+class AdaptiveApplyRequest(BaseModel):
+    restart: bool = False
 
 
 # ─── WebSocket Manager ────────────────────────────────────────────
@@ -255,7 +305,7 @@ async def get_run(run_id: int):
 async def get_signals(symbol: Optional[str] = None, limit: int = Query(50, le=200)):
     return get_signal_history(symbol, limit)
 
-@app.get("/api/signals/latest/{symbol}")
+@app.get("/api/signals/latest/{symbol:path}")
 async def latest_signal(symbol: str):
     symbol = symbol.replace("%2F", "/")
     sig = get_latest_valid_signal(symbol)
@@ -343,6 +393,61 @@ async def _ft(path: str) -> dict:
         r.raise_for_status()
         return r.json()
 
+def _load_freqtrade_config() -> dict:
+    if not FREQTRADE_CONFIG_PATH.exists():
+        raise HTTPException(404, f"Freqtrade config not found: {FREQTRADE_CONFIG_PATH}")
+    try:
+        return json.loads(FREQTRADE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(500, f"Invalid Freqtrade config JSON: {exc}") from exc
+
+def _write_freqtrade_config(config: dict) -> str:
+    FREQTRADE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    backup = FREQTRADE_CONFIG_PATH.with_suffix(
+        FREQTRADE_CONFIG_PATH.suffix + f".bak.{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}"
+    )
+    if FREQTRADE_CONFIG_PATH.exists():
+        backup.write_text(FREQTRADE_CONFIG_PATH.read_text(encoding="utf-8"), encoding="utf-8")
+
+    tmp = FREQTRADE_CONFIG_PATH.with_suffix(FREQTRADE_CONFIG_PATH.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(FREQTRADE_CONFIG_PATH)
+    return str(backup)
+
+def _restart_freqtrade_container() -> dict:
+    if not FREQTRADE_COMPOSE_FILE.exists():
+        raise HTTPException(500, f"Docker compose file not found: {FREQTRADE_COMPOSE_FILE}")
+    cmd = ["docker", "compose", "-f", str(FREQTRADE_COMPOSE_FILE), "restart", FREQTRADE_SERVICE]
+    result = subprocess.run(
+        cmd,
+        cwd=str(FREQTRADE_COMPOSE_FILE.parent),
+        capture_output=True,
+        text=True,
+        timeout=90,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            500,
+            {
+                "error": "Freqtrade restart failed",
+                "cmd": " ".join(cmd),
+                "stdout": result.stdout[-2000:],
+                "stderr": result.stderr[-2000:],
+            },
+        )
+    return {
+        "cmd": " ".join(cmd),
+        "stdout": result.stdout.strip(),
+        "stderr": result.stderr.strip(),
+    }
+
+async def _freqtrade_live_config() -> dict:
+    try:
+        return await _ft("/show_config")
+    except Exception:
+        return {}
+
 @app.get("/api/freqtrade/status")
 async def ft_status():
     try: return await _ft("/status")
@@ -368,6 +473,265 @@ async def ft_daily(days: int = Query(30)):
     try: return await _ft(f"/daily?timescale={days}")
     except: return {"error": "unavailable"}
 
+@app.get("/api/freqtrade/config")
+async def ft_config():
+    local = _load_freqtrade_config()
+    live = await _freqtrade_live_config()
+    api = local.get("api_server", {})
+    return {
+        "timeframe": local.get("timeframe", "1h"),
+        "dry_run": bool(local.get("dry_run", True)),
+        "trading_mode": local.get("trading_mode", "futures"),
+        "margin_mode": local.get("margin_mode", ""),
+        "live_timeframe": live.get("timeframe"),
+        "live_dry_run": live.get("dry_run"),
+        "live_trading_mode": live.get("trading_mode"),
+        "state": live.get("state"),
+        "strategy": live.get("strategy"),
+        "available_timeframes": list(VALID_TIMEFRAMES),
+        "config_path": str(FREQTRADE_CONFIG_PATH),
+        "compose_file": str(FREQTRADE_COMPOSE_FILE),
+        "service": FREQTRADE_SERVICE,
+        "ui_url": FREQTRADE_UI_URL,
+        "api_url": FREQTRADE_URL,
+        "api_user": api.get("username", FREQTRADE_USER),
+    }
+
+@app.post("/api/freqtrade/config/restart")
+async def ft_config_restart(payload: FreqtradeRestartRequest):
+    timeframe = payload.timeframe.strip()
+    if timeframe not in VALID_TIMEFRAMES:
+        raise HTTPException(400, f"Unsupported timeframe: {timeframe}")
+
+    config = _load_freqtrade_config()
+    old_timeframe = config.get("timeframe")
+    config["timeframe"] = timeframe
+    config["dry_run"] = True
+    backup = _write_freqtrade_config(config)
+    restart = _restart_freqtrade_container()
+    live = await _freqtrade_live_config()
+    return {
+        "status": "restarted",
+        "old_timeframe": old_timeframe,
+        "timeframe": timeframe,
+        "dry_run": True,
+        "backup": backup,
+        "restart": restart,
+        "live_timeframe": live.get("timeframe"),
+        "live_dry_run": live.get("dry_run"),
+        "state": live.get("state"),
+    }
+
+
+def _check_agent_running() -> dict:
+    """Return {running: bool, reason: str}.
+    Uses two signals:
+    1. flock non-blocking try on logs/runner.lock  (cron lock mechanism)
+    2. pgrep scan for agent_runner_v2.py process
+    """
+    import fcntl
+    lock_path = LOG_DIR / "runner.lock"
+    # Signal 1 — try to acquire the same flock the cron script uses
+    try:
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o664)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(fd, fcntl.LOCK_UN)  # release immediately — nobody holds it
+        except BlockingIOError:
+            os.close(fd)
+            return {"running": True, "reason": "runner.lock đang bị giữ (cron agent đang chạy)"}
+        os.close(fd)
+    except OSError:
+        pass  # can't check lock — fall through to process scan
+
+    # Signal 2 — scan process list (exclude self)
+    try:
+        result = subprocess.run(
+            ["pgrep", "-f", "agent_runner_v2.py"],
+            capture_output=True, text=True, timeout=5
+        )
+        my_pid = str(os.getpid())
+        pids = [p.strip() for p in result.stdout.splitlines() if p.strip() and p.strip() != my_pid]
+        if pids:
+            return {"running": True, "reason": f"TradingAgents đang chạy (PID: {', '.join(pids)})"}
+    except Exception:
+        pass
+
+    return {"running": False, "reason": ""}
+
+
+async def _check_open_trades() -> dict:
+    """Return {has_open: bool, count: int, trades: list[str]}.
+    Calls FT /status endpoint."""
+    try:
+        data = await _ft("/status")
+        if isinstance(data, list) and len(data) > 0:
+            pairs = [f"{t.get('pair')} ({'short' if t.get('is_short') else 'long'})" for t in data]
+            return {"has_open": True, "count": len(data), "trades": pairs}
+        return {"has_open": False, "count": 0, "trades": []}
+    except Exception as exc:
+        # Cannot reach FT — treat as safe to proceed but warn
+        return {"has_open": False, "count": 0, "trades": [], "warning": str(exc)}
+
+
+@app.get("/api/freqtrade/market-mode/preflight")
+async def ft_market_mode_preflight():
+    """Check preconditions before switching market mode."""
+    agent = _check_agent_running()
+    trades = await _check_open_trades()
+    can_switch = not agent["running"] and not trades["has_open"]
+    return {
+        "can_switch": can_switch,
+        "agent_running": agent["running"],
+        "agent_reason": agent["reason"],
+        "open_trades": trades["count"],
+        "open_trade_list": trades["trades"],
+        "open_trades_warning": trades.get("warning", ""),
+    }
+
+
+@app.post("/api/freqtrade/config/market-mode")
+async def ft_switch_market_mode(payload: MarketModeRequest):
+    """Switch Freqtrade between spot and futures mode, then restart container.
+    Guards:
+      - Block if TradingAgents agent_runner_v2.py is currently running.
+      - Block if Freqtrade has any open trades.
+    """
+    mode = payload.mode.strip().lower()
+    if mode not in ("spot", "futures"):
+        raise HTTPException(400, f"Invalid mode: {mode!r}. Must be 'spot' or 'futures'.")
+
+    # ── Guard 1: TradingAgents không được đang chạy ──────────────
+    agent = _check_agent_running()
+    if agent["running"]:
+        raise HTTPException(409, {
+            "error": "agent_running",
+            "message": f"Không thể đổi mode: {agent['reason']}. Hãy chờ TradingAgents hoàn tất rồi thử lại.",
+            "reason": agent["reason"],
+        })
+
+    # ── Guard 2: Freqtrade không được có lệnh đang mở ────────────
+    trades = await _check_open_trades()
+    if trades["has_open"]:
+        trade_list = ", ".join(trades["trades"])
+        raise HTTPException(409, {
+            "error": "open_trades",
+            "message": f"Không thể đổi mode: còn {trades['count']} lệnh đang mở ({trade_list}). Hãy đóng tất cả lệnh trước.",
+            "open_trades": trades["count"],
+            "trade_list": trades["trades"],
+        })
+
+    config = _load_freqtrade_config()
+    old_mode = config.get("trading_mode", "futures")
+
+    if mode == old_mode:
+        return {"status": "no_change", "mode": mode, "message": f"Đã đang chạy ở chế độ {mode.upper()}."}
+
+    if mode == "futures":
+        config["trading_mode"] = "futures"
+        config["margin_mode"] = "isolated"
+        config["strategy"] = "AISignalLongShortStrategy"
+        for section in ("ccxt_config", "ccxt_async_config"):
+            config.setdefault("exchange", {}).setdefault(section, {}).setdefault("options", {})["defaultType"] = "future"
+        whitelist = config.get("exchange", {}).get("pair_whitelist", [])
+        config["exchange"]["pair_whitelist"] = [
+            p if ":" in p else p + ":USDT" for p in whitelist
+        ]
+    else:  # spot
+        config["trading_mode"] = "spot"
+        config.pop("margin_mode", None)
+        config["strategy"] = "AISignalStrategy"
+        for section in ("ccxt_config", "ccxt_async_config"):
+            config.setdefault("exchange", {}).setdefault(section, {}).setdefault("options", {})["defaultType"] = "spot"
+        whitelist = config.get("exchange", {}).get("pair_whitelist", [])
+        config["exchange"]["pair_whitelist"] = [
+            p.split(":")[0] if ":" in p else p for p in whitelist
+        ]
+
+    config["dry_run"] = True
+    backup = _write_freqtrade_config(config)
+    restart = _restart_freqtrade_container()
+    live = await _freqtrade_live_config()
+    return {
+        "status": "restarted",
+        "old_mode": old_mode,
+        "new_mode": mode,
+        "strategy": config["strategy"],
+        "pair_whitelist": config["exchange"]["pair_whitelist"],
+        "dry_run": True,
+        "backup": backup,
+        "restart": restart,
+        "live_trading_mode": live.get("trading_mode"),
+        "state": live.get("state"),
+    }
+
+
+# ─── Adaptive Risk / Outback ─────────────────────────────────────
+
+@app.post("/api/outback/freqtrade")
+async def ingest_freqtrade_outback(payload: dict[str, Any]):
+    """Receive outback telemetry from Freqtrade/automation and persist it."""
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    item = record_outback_payload(payload)
+    return {"status": "recorded", "outback": item}
+
+
+@app.post("/api/outback/freqtrade/collect")
+async def collect_freqtrade_outback():
+    """Pull current Freqtrade state and store it as an outback snapshot."""
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    live = await _freqtrade_live_config()
+    status = await ft_status()
+    profit = await ft_profit()
+    trades = await ft_trades(limit=100)
+    payload = {
+        "source": "freqtrade-pull",
+        "symbol": "BTC/USDT",
+        "market": live.get("trading_mode") or live.get("trading_mode.value") or "futures",
+        "timeframe": live.get("timeframe") or "1h",
+        "dry_run_wallet": live.get("dry_run_wallet") or _load_freqtrade_config().get("dry_run_wallet"),
+        "open_trades": status if isinstance(status, list) else [],
+        "profit_summary": profit if isinstance(profit, dict) else {},
+        "trade_history": trades.get("trades", []) if isinstance(trades, dict) else [],
+        "raw_live_config": live,
+    }
+    item = record_outback_payload(payload)
+    return {"status": "recorded", "outback": item}
+
+
+@app.get("/api/adaptive/risk")
+async def adaptive_risk_dashboard():
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    return get_adaptive_dashboard()
+
+
+@app.post("/api/adaptive/risk/run")
+async def adaptive_risk_run(payload: AdaptiveRunRequest):
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    result = run_adaptive_workflow(symbol=payload.symbol, market=payload.market)
+    if payload.apply_config:
+        result["apply"] = apply_proposal_to_freqtrade(result["id"])
+        if payload.restart:
+            result["restart"] = _restart_freqtrade_container()
+    return result
+
+
+@app.post("/api/adaptive/risk/apply/{proposal_id}")
+async def adaptive_risk_apply(proposal_id: int, payload: AdaptiveApplyRequest):
+    if not ADAPTIVE_OK:
+        return {"error": "adaptive_risk not available"}
+    try:
+        result = apply_proposal_to_freqtrade(proposal_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if payload.restart:
+        result["restart"] = _restart_freqtrade_container()
+    return result
+
 
 # ─── Accuracy / Memory ───────────────────────────────────────────
 
@@ -377,7 +741,7 @@ async def accuracy(symbol: Optional[str] = None):
         return {"error": "feedback_collector not available"}
     return get_accuracy_stats(symbol)
 
-@app.get("/api/memory/{symbol}")
+@app.get("/api/memory/{symbol:path}")
 async def memory(symbol: str):
     symbol = symbol.replace("%2F", "/")
     if not FEEDBACK_OK:
@@ -388,6 +752,7 @@ async def memory(symbol: str):
 # ─── Action triggers ──────────────────────────────────────────────
 
 def _bg_run(cmd: str, log_file: str):
+    Path(log_file).parent.mkdir(parents=True, exist_ok=True)
     subprocess.Popen(
         shlex.split(cmd),
         stdout=open(log_file, "a"),
@@ -398,7 +763,7 @@ def _bg_run(cmd: str, log_file: str):
 @app.post("/api/trigger-run")
 async def trigger_run(background_tasks: BackgroundTasks, symbol: str = "BTC/USDT"):
     cmd = f"{VENV_PYTHON} {DASHBOARD_DIR}/agent_runner_v2.py --symbol '{symbol}'"
-    background_tasks.add_task(_bg_run, cmd, "/opt/tracetrader/logs/manual_run.log")
+    background_tasks.add_task(_bg_run, cmd, str(LOG_DIR / "manual_run.log"))
     return {"status": "triggered", "symbol": symbol}
 
 @app.post("/api/trigger-feedback")
@@ -426,12 +791,12 @@ async def trigger_backfill(background_tasks: BackgroundTasks):
 # ─── Static files ─────────────────────────────────────────────────
 
 STATIC = Path(DASHBOARD_DIR) / "static"
-STATIC.mkdir(exist_ok=True)
+STATIC.mkdir(parents=True, exist_ok=True)
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
     idx = STATIC / "index.html"
-    return HTMLResponse(idx.read_text() if idx.exists() else "<h1>Place index.html in /opt/tracetrader/dashboard/static/</h1>")
+    return HTMLResponse(idx.read_text() if idx.exists() else f"<h1>Place index.html in {STATIC}</h1>")
 
 if STATIC.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

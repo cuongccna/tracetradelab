@@ -1,6 +1,6 @@
 """
 telegram_reporter.py — Gửi báo cáo AI run về Telegram
-Path: /opt/tracetrader/dashboard/telegram_reporter.py
+Path: /opt/TraceTradeLab/dashboard/telegram_reporter.py
 
 Cấu hình:
   Điền TELEGRAM_BOT_TOKEN và TELEGRAM_CHAT_ID bên dưới
@@ -13,10 +13,29 @@ import logging
 import sqlite3
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+# ─── Tự động load .env từ thư mục cha (cho phép cấu hình qua file) ──────────
+try:
+    from dotenv import load_dotenv as _load_dotenv
+    _here = Path(__file__).resolve().parent
+    _candidates = []
+    if os.environ.get("TRACE_ENV_FILE"):
+        _candidates.append(Path(os.environ["TRACE_ENV_FILE"]))
+    _candidates.extend([
+        _here / ".env",
+        _here.parent / ".env",
+        _here.parent / "tradingagents-src" / ".env",
+    ])
+    for _env in _candidates:
+        if _env.exists():
+            _load_dotenv(_env, override=False)
+            break
+except ImportError:
+    pass
 
 # ─────────────────────────────────────────────────────────────
 #  ⚙️  CẤU HÌNH — Điền vào đây (hoặc dùng biến môi trường)
@@ -24,7 +43,8 @@ log = logging.getLogger(__name__)
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")   # ← Điền token bot
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID",   "")   # ← Điền chat ID của bạn
 DASHBOARD_URL      = os.environ.get("DASHBOARD_URL", "http://localhost:8888")  # ← URL public nếu có
-DB_PATH            = Path("/opt/tracetrader/dashboard/tracetrader.db")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+DB_PATH            = Path(os.environ.get("TRACE_DB_PATH", str(DEFAULT_TRACE_ROOT / "dashboard" / "tracetrader.db")))
 
 ACTION_EMOJI = {"BUY": "📈", "SELL": "📉", "HOLD": "⏸️", "EXIT": "🚪"}
 REGIME_EMOJI = {"TRENDING_UP": "🔼", "TRENDING_DOWN": "🔽", "RANGING": "↔️",
@@ -72,20 +92,21 @@ def _get_overview() -> dict:
         con = sqlite3.connect(str(DB_PATH))
         cur = con.cursor()
         # KPI tổng hợp
+        since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
         cur.execute("""
             SELECT
                 COUNT(*) total_runs,
                 SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) done_runs
-            FROM runs WHERE created_at > datetime('now', '-7 days')
-        """)
+            FROM agent_runs WHERE started_at > ?
+        """, (since,))
         row = cur.fetchone()
         stats = {"runs_7d": row[0] or 0, "done_7d": row[1] or 0}
 
         # Outcomes
         cur.execute("""
-            SELECT COUNT(*), AVG(pnl_pct),
-                   SUM(CASE WHEN pnl_pct>0 THEN 1 ELSE 0 END)
-            FROM outcomes
+            SELECT COUNT(*), AVG(profit_pct),
+                   SUM(CASE WHEN profit_pct>0 THEN 1 ELSE 0 END)
+            FROM signal_outcomes
         """)
         row = cur.fetchone()
         stats["total_outcomes"] = row[0] or 0
@@ -188,7 +209,7 @@ def send_error_alert(run_id: int, symbol: str, error: str) -> None:
 def send_daily_summary() -> None:
     """
     Gửi báo cáo tổng hợp ngày.
-    Gọi từ crontab: 0 8 * * * python3 /opt/tracetrader/dashboard/telegram_reporter.py --daily
+    Gọi từ crontab: 0 8 * * * python3 /opt/TraceTradeLab/dashboard/telegram_reporter.py --daily
     """
     overview = _get_overview()
     now_vn = datetime.now(timezone.utc).strftime("%d/%m/%Y") + " UTC"

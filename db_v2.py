@@ -10,15 +10,18 @@ Bổ sung so với db.py:
   - agent_messages: thêm agent_bias, agent_confidence, agent_recommendation
   - signals: thêm signal_status, position_size_pct, entry_price
 
-Path: /opt/tracetrader/dashboard/db_v2.py
+Path: /opt/TraceTradeLab/dashboard/db_v2.py
 """
 
-import sqlite3, json
+import os, sqlite3, json
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import contextmanager
 
-DB_PATH = Path("/opt/tracetrader/dashboard/tracetrader.db")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+DB_PATH = Path(os.getenv("TRACE_DB_PATH", str(DASHBOARD_DIR / "tracetrader.db")))
 SIGNAL_TTL_MINUTES = 70
 
 @contextmanager
@@ -226,6 +229,54 @@ def init_db():
             )
         """)
 
+        # ── 10. outback telemetry từ Freqtrade ───────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS freqtrade_outback_events (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                source              TEXT NOT NULL DEFAULT 'freqtrade',
+                payload_id          TEXT,
+                symbol              TEXT,
+                market              TEXT,
+                timeframe           TEXT,
+                current_balance     REAL,
+                available_balance   REAL,
+                equity_peak         REAL,
+                drawdown_pct        REAL,
+                max_drawdown_pct    REAL,
+                volatility_atr_pct  REAL,
+                total_profit_pct    REAL,
+                total_profit_abs    REAL,
+                open_trade_count    INTEGER DEFAULT 0,
+                closed_trade_count  INTEGER DEFAULT 0,
+                trade_history       TEXT,
+                raw_payload         TEXT NOT NULL,
+                created_at          TEXT NOT NULL
+            )
+        """)
+
+        # ── 11. adaptive risk proposals ──────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS adaptive_risk_proposals (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol              TEXT NOT NULL,
+                market              TEXT NOT NULL,
+                timeframe           TEXT,
+                window_start        TEXT,
+                window_end          TEXT,
+                sample_size         INTEGER DEFAULT 0,
+                old_config          TEXT NOT NULL,
+                quant_proposal      TEXT NOT NULL,
+                risk_critique       TEXT NOT NULL,
+                final_config        TEXT NOT NULL,
+                manager_reasoning   TEXT NOT NULL,
+                safety_status       TEXT NOT NULL,
+                applied             INTEGER DEFAULT 0,
+                applied_at          TEXT,
+                config_backup_path  TEXT,
+                created_at          TEXT NOT NULL
+            )
+        """)
+
         # ── Indexes ───────────────────────────────────────────────
         idxs = [
             ("idx_msgs_run",       "agent_messages(run_id)"),
@@ -241,9 +292,21 @@ def init_db():
             ("idx_runs_symbol",    "agent_runs(symbol, started_at)"),
             ("idx_runs_regime",    "agent_runs(market_regime)"),
             ("idx_feedback_run",   "feedback_events(run_id)"),
+            ("idx_outback_symbol", "freqtrade_outback_events(symbol, created_at)"),
+            ("idx_outback_market", "freqtrade_outback_events(market, created_at)"),
+            ("idx_adaptive_symbol","adaptive_risk_proposals(symbol, created_at)"),
         ]
         for name, cols in idxs:
             conn.execute(f"CREATE INDEX IF NOT EXISTS {name} ON {cols}")
+        # Freqtrade dry-run trade_id can restart from 1 when the bot/database is
+        # recreated, and spot/futures may both produce trade_id=1.  Uniqueness
+        # therefore needs enough context to avoid dropping valid feedback.
+        conn.execute("DROP INDEX IF EXISTS idx_outcomes_ft_trade_unique")
+        _safe_create_unique_index(
+            conn,
+            "idx_outcomes_ft_trade_unique_v2",
+            "signal_outcomes(ft_trade_id, symbol, closed_at)",
+        )
 
     print(f"[DB v2] Schema initialized at {DB_PATH}")
 
@@ -254,6 +317,14 @@ def _safe_add_column(conn, table: str, col: str, col_type: str):
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}")
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+
+def _safe_create_unique_index(conn, name: str, expr: str):
+    """Create a uniqueness guard when existing data allows it."""
+    try:
+        conn.execute(f"CREATE UNIQUE INDEX IF NOT EXISTS {name} ON {expr}")
+    except sqlite3.IntegrityError as e:
+        print(f"[DB v2] Skipped unique index {name}: existing duplicates ({e})")
 
 
 # ═══════════════════════════════════════════════════════════════════

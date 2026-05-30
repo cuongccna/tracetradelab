@@ -10,13 +10,24 @@ Cách làm:
 signal_status lifecycle:
   CREATED → VALIDATED → ACCEPTED / REJECTED_* → EXECUTED → CLOSED
 
-Path: /opt/tracetrader/dashboard/signal_lifecycle.py
+Path: /opt/TraceTradeLab/dashboard/signal_lifecycle.py
 """
 
-import sys, logging, httpx
+import os, sys, logging, httpx
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
-sys.path.insert(0, "/opt/tracetrader/dashboard")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+FREQTRADE_CONFIG_PATH = Path(
+    os.getenv("FREQTRADE_CONFIG_PATH", str(TRACE_ROOT / "freqtrade/user_data/config.json"))
+)
+FREQTRADE_ENV_PATH = Path(
+    os.getenv("FREQTRADE_ENV_PATH", str(TRACE_ROOT / "freqtrade/.env"))
+)
+
+sys.path.insert(0, str(DASHBOARD_DIR))
 
 log = logging.getLogger(__name__)
 
@@ -24,13 +35,11 @@ def _load_ft_pass() -> tuple[str, str, str]:
     """Read Freqtrade credentials. Falls back to freqtrade/.env if config.json
     has 'overridden_by_environment' as password."""
     import json as _json
-    from pathlib import Path as _Path
     _url = "http://127.0.0.1:8080/api/v1"
     _user = "admin"
     _pass = ""
     try:
-        cfg_path = _Path("/opt/tracetrader/freqtrade/user_data/config.json")
-        with open(cfg_path) as _f:
+        with open(FREQTRADE_CONFIG_PATH) as _f:
             _cfg = _json.load(_f)
         _api = _cfg.get("api_server", {})
         _url = f"http://127.0.0.1:{_api.get('listen_port', 8080)}/api/v1"
@@ -38,10 +47,9 @@ def _load_ft_pass() -> tuple[str, str, str]:
         _pass = _api.get("password", "")
     except Exception as _e:
         log.warning(f"Cannot load FT config.json: {_e}")
-    if not _pass or _pass == "overridden_by_environment":
+    if not _pass or _pass in ("overridden_by_environment", "CHANGE_ME"):
         try:
-            env_path = _Path("/opt/tracetrader/freqtrade/.env")
-            for line in env_path.read_text().splitlines():
+            for line in FREQTRADE_ENV_PATH.read_text().splitlines():
                 if line.startswith("FREQTRADE_API_PASSWORD="):
                     _pass = line.split("=", 1)[1].strip()
                     break
@@ -59,6 +67,7 @@ class RejectionReason:
     EXPIRED         = "REJECTED_EXPIRED"
     INVALID         = "REJECTED_INVALID_FORMAT"
     OPEN_TRADE      = "REJECTED_EXISTING_OPEN_TRADE"
+    NO_OPEN_TRADE   = "REJECTED_NO_OPEN_TRADE"
     FT_OFFLINE      = "REJECTED_BOT_OFFLINE"
 
 
@@ -75,6 +84,49 @@ def ft_get(path: str) -> dict | list | None:
         return None
 
 
+def _config_trading_mode() -> str:
+    try:
+        import json as _json
+        with open(FREQTRADE_CONFIG_PATH) as _f:
+            return str(_json.load(_f).get("trading_mode", "spot")).lower()
+    except Exception:
+        return "spot"
+
+
+def _is_futures_mode(bot_status: dict | None = None) -> bool:
+    if isinstance(bot_status, dict):
+        mode = bot_status.get("trading_mode") or bot_status.get("trading_mode.value")
+        if str(mode).lower() == "futures":
+            return True
+    return _config_trading_mode() == "futures"
+
+
+def freqtrade_action(action: str, *, allow_short: bool = False) -> str:
+    """Map TradingAgents decisions to Freqtrade action semantics."""
+    normalized = (action or "").upper()
+    if normalized == "SELL" and not allow_short:
+        return "EXIT"
+    return normalized
+
+
+def _same_pair(signal_symbol: str, ft_pair: str) -> bool:
+    signal_base = (signal_symbol or "").split(":", 1)[0]
+    ft_base = (ft_pair or "").split(":", 1)[0]
+    return bool(signal_base) and signal_base == ft_base
+
+
+def _parse_dt(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+        dt = datetime.fromisoformat(str(value).replace(" ", "T").replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return None
+
+
 def validate_signal(signal: dict) -> tuple[bool, str]:
     """
     Kiểm tra signal có hợp lệ không trước khi gửi cho Freqtrade.
@@ -87,13 +139,16 @@ def validate_signal(signal: dict) -> tuple[bool, str]:
         return False, RejectionReason.LOW_CONFIDENCE
 
     # Action check
-    if signal.get("action") not in ("BUY", "SELL", "EXIT"):
+    allowed_actions = ("BUY", "SELL", "EXIT") if _is_futures_mode() else ("BUY", "EXIT")
+    if freqtrade_action(signal.get("action"), allow_short=_is_futures_mode()) not in allowed_actions:
         return False, RejectionReason.INVALID
 
     # Expiry check
     if signal.get("expires_at"):
         try:
-            exp = datetime.fromisoformat(signal["expires_at"])
+            exp = _parse_dt(signal["expires_at"])
+            if not exp:
+                return False, RejectionReason.EXPIRED
             if datetime.now(timezone.utc) > exp:
                 return False, RejectionReason.EXPIRED
         except Exception:
@@ -112,13 +167,37 @@ def check_freqtrade_acceptance(signal: dict) -> tuple[str, str | None]:
     if not bot_status:
         return RejectionReason.FT_OFFLINE, "Freqtrade bot offline or unreachable"
 
-    # Có open trade cùng pair không?
+    allow_short = _is_futures_mode(bot_status)
+
+    # Spot: BUY opens a long, SELL/EXIT closes an existing long.
+    # Futures: BUY opens long or covers short; SELL opens short or closes long.
     open_trades = ft_get("/status")
     if isinstance(open_trades, list):
         pair = signal.get("symbol", "").replace("/", "/")
-        for trade in open_trades:
-            if trade.get("pair") == pair:
+        matching_open_trades = [
+            trade for trade in open_trades if _same_pair(pair, trade.get("pair", ""))
+        ]
+        has_open_trade = bool(matching_open_trades)
+        action = freqtrade_action(signal.get("action"), allow_short=allow_short)
+        if action == "BUY":
+            if allow_short:
+                sig_time = _parse_dt(signal.get("created_at"))
+                for trade in matching_open_trades:
+                    open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+                    if not trade.get("is_short") and sig_time and open_time and open_time >= sig_time:
+                        return "ACCEPTED", None
+            if has_open_trade:
                 return RejectionReason.OPEN_TRADE, f"Existing open trade for {pair}"
+        elif action == "SELL" and allow_short:
+            sig_time = _parse_dt(signal.get("created_at"))
+            for trade in matching_open_trades:
+                open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+                if trade.get("is_short") and sig_time and open_time and open_time >= sig_time:
+                    return "ACCEPTED", None
+            if has_open_trade:
+                return RejectionReason.OPEN_TRADE, f"Existing open trade for {pair}"
+        elif action == "EXIT" and not has_open_trade:
+            return RejectionReason.NO_OPEN_TRADE, f"No open trade to exit for {pair}"
 
     # Signal được chấp nhận về nguyên tắc
     return "ACCEPTED", None
@@ -128,22 +207,32 @@ def match_signal_to_ft_trade(signal: dict, ft_trades: list) -> dict | None:
     """
     Match signal với Freqtrade trade dựa trên timing và pair.
     """
-    sig_time = datetime.fromisoformat(signal["created_at"])
+    sig_time = _parse_dt(signal["created_at"])
+    if not sig_time:
+        return None
     pair = signal.get("symbol", "").replace("/", "/")
+    action = freqtrade_action(signal.get("action"), allow_short=_is_futures_mode())
 
     candidates = []
     for trade in ft_trades:
-        if trade.get("pair") != pair:
+        if not _same_pair(pair, trade.get("pair", "")):
             continue
-        open_str = trade.get("open_date") or ""
-        try:
-            if isinstance(open_str, (int, float)):
-                t_open = datetime.fromtimestamp(open_str / 1000, tz=timezone.utc)
-            else:
-                t_open = datetime.fromisoformat(open_str.replace("Z", "+00:00"))
-        except Exception:
+        if action == "EXIT":
+            close_time = _parse_dt(trade.get("close_date") or trade.get("close_date_utc"))
+            if close_time and not trade.get("is_open", True):
+                diff = (close_time - sig_time).total_seconds()
+                if 0 <= diff <= 7200:
+                    candidates.append((diff, trade))
+            elif trade.get("is_open", True):
+                open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+                if not open_time or open_time <= sig_time:
+                    candidates.append((0, trade))
             continue
-        diff = (t_open - sig_time).total_seconds()
+
+        open_time = _parse_dt(trade.get("open_date") or trade.get("open_date_utc"))
+        if not open_time:
+            continue
+        diff = (open_time - sig_time).total_seconds()
         if 0 <= diff <= 7200:
             candidates.append((diff, trade))
 
@@ -151,6 +240,21 @@ def match_signal_to_ft_trade(signal: dict, ft_trades: list) -> dict | None:
         return None
     candidates.sort(key=lambda x: x[0])
     return candidates[0][1]
+
+
+def _get_ft_trade_candidates() -> list:
+    """Return open and closed trades from Freqtrade APIs."""
+    candidates = []
+    open_trades = ft_get("/status")
+    if isinstance(open_trades, list):
+        candidates.extend(open_trades)
+
+    all_trades = ft_get("/trades?limit=50")
+    if isinstance(all_trades, dict):
+        all_trades = all_trades.get("trades", [])
+    if isinstance(all_trades, list):
+        candidates.extend(all_trades)
+    return candidates
 
 
 def process_signal(signal_id: int, signal: dict) -> dict:
@@ -190,18 +294,30 @@ def process_signal(signal_id: int, signal: dict) -> dict:
         log.info(f"Signal #{signal_id} not accepted by FT: {ft_reason}")
         return result
 
-    # Create execution record as ACCEPTED
-    exec_id = create_execution(signal_id, status="ACCEPTED")
+    # Create or reuse execution record as ACCEPTED
+    exec_id = None
+    try:
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT id FROM executions
+                WHERE signal_id = ?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (signal_id,),
+            ).fetchone()
+            if row:
+                exec_id = int(row["id"] if hasattr(row, "keys") else row[0])
+    except Exception:
+        exec_id = None
+    if exec_id is None:
+        exec_id = create_execution(signal_id, status="ACCEPTED")
     update_signal_status(signal_id, "ACCEPTED")
     result["execution_id"] = exec_id
 
     # ── Step 3: Wait and match with FT trade ─────────────────────
     # Poll FT trades để tìm match (sẽ được gọi lại sau)
-    all_trades = ft_get("/trades?limit=50")
-    if isinstance(all_trades, dict):
-        all_trades = all_trades.get("trades", [])
-    if not all_trades:
-        all_trades = []
+    all_trades = _get_ft_trade_candidates()
 
     matched = match_signal_to_ft_trade(signal, all_trades)
     if matched:
@@ -239,13 +355,18 @@ def sync_all_pending_signals():
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        # Lấy signals BUY/SELL chưa có execution
+        # Lấy signals BUY/SELL chưa executed, gồm cả signals đã ACCEPTED trước đó
         rows = conn.execute("""
             SELECT s.id, s.symbol, s.action, s.confidence,
                    s.created_at, s.expires_at, s.signal_status
             FROM signals s
             LEFT JOIN executions e ON e.signal_id = s.id
-            WHERE e.id IS NULL AND s.action IN ('BUY','SELL')
+            WHERE s.action IN ('BUY','SELL','EXIT')
+              AND (
+                e.id IS NULL
+                OR e.status IN ('ACCEPTED', 'PENDING')
+                OR s.signal_status IN ('VALIDATED', 'ACCEPTED')
+              )
             ORDER BY s.created_at DESC LIMIT 100
         """).fetchall()
         conn.close()

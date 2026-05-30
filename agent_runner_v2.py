@@ -5,18 +5,39 @@ Thay đổi so với v1:
   - Portfolio Manager biết các trade trước đúng/sai như thế nào
   - Ghi token usage để track chi phí DeepSeek
 
-Path: /opt/tracetrader/dashboard/agent_runner.py
+Path: /opt/TraceTradeLab/dashboard/agent_runner.py
 """
 
-import sys, os, re, json, argparse, logging
+import sys, os, re, json, argparse, logging, fcntl
 from datetime import datetime, timezone
 from pathlib import Path
+from time import monotonic
 
-sys.path.insert(0, "/opt/tracetrader/tradingagents-src")
-from dotenv import load_dotenv
-load_dotenv("/opt/tracetrader/tradingagents-src/.env")
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+TRADINGAGENTS_SRC = Path(
+    os.getenv("TRADINGAGENTS_SRC", str(TRACE_ROOT / "tradingagents-src"))
+)
+DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
+LOG_DIR = Path(os.getenv("TRACE_LOG_DIR", str(TRACE_ROOT / "logs")))
+ENV_FILE = Path(os.getenv("TRACE_ENV_FILE", str(TRACE_ROOT / ".env")))
+AGENT_LOCK_FILE = Path(
+    os.getenv("TRACE_AGENT_LOCK_FILE", str(LOG_DIR / "agent_runner.lock"))
+)
 
-sys.path.insert(0, "/opt/tracetrader/dashboard")
+sys.path.insert(0, str(TRADINGAGENTS_SRC))
+
+# ── Load API keys từ .env — phải chạy TRƯỚC khi import TradingAgents ──
+import os as _os
+
+if ENV_FILE.exists():
+    for _line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            _os.environ.setdefault(_k.strip(), _v.strip())
+
+sys.path.insert(0, str(DASHBOARD_DIR))
 from db_v2 import (
     init_db, create_run, finish_run, fail_run,
     add_agent_message, write_signal
@@ -56,8 +77,7 @@ try:
 except ImportError:
     FEEDBACK_AVAILABLE = False
 
-LOG_DIR = Path("/opt/tracetrader/logs")
-LOG_DIR.mkdir(exist_ok=True)
+LOG_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -88,7 +108,113 @@ CRYPTO_MAP = {
     "BTC/USDT": "BTC", "ETH/USDT": "ETH", "SOL/USDT": "SOL",
     "BNB/USDT": "BNB", "UNI/USDT": "UNI", "ONDO/USDT": "ONDO",
 }
-MIN_CONFIDENCE = 0.60
+MIN_CONFIDENCE = float(os.getenv("TRACE_MIN_CONFIDENCE", "0.60"))
+ENABLE_SHORT_SIGNALS = os.getenv("TRACE_ENABLE_SHORT_SIGNALS", "false").lower() in ("1", "true", "yes", "on")
+DEFAULT_MAX_SIGNAL_RUNTIME_MINUTES = 45 if ENABLE_SHORT_SIGNALS else 180
+MAX_SIGNAL_RUNTIME_MINUTES = float(
+    os.getenv("TRACE_MAX_SIGNAL_RUNTIME_MINUTES", str(DEFAULT_MAX_SIGNAL_RUNTIME_MINUTES))
+)
+DEFAULT_MIN_RUN_INTERVAL_MINUTES = 50 if ENABLE_SHORT_SIGNALS else 180
+MIN_RUN_INTERVAL_MINUTES = float(
+    os.getenv("TRACE_MIN_RUN_INTERVAL_MINUTES", str(DEFAULT_MIN_RUN_INTERVAL_MINUTES))
+)
+RUN_INTERVAL_FILE = Path(
+    os.getenv("TRACE_RUN_INTERVAL_FILE", str(LOG_DIR / "agent_runner.last_start.json"))
+)
+_RUN_LOCK_HANDLE = None
+
+
+def _defang_late_trade_signal(signal: dict, elapsed_minutes: float, run_id: int) -> dict:
+    """Convert late trade signals to HOLD before they reach Freqtrade."""
+    if signal.get("action") not in ("BUY", "SELL"):
+        return signal
+    if elapsed_minutes <= MAX_SIGNAL_RUNTIME_MINUTES:
+        return signal
+
+    original_action = signal["action"]
+    original_confidence = signal.get("confidence", 0)
+    reason = (
+        f"Signal blocked: AI runtime {elapsed_minutes:.1f}m exceeded "
+        f"TRACE_MAX_SIGNAL_RUNTIME_MINUTES={MAX_SIGNAL_RUNTIME_MINUTES:.1f}m. "
+        f"Original action was {original_action} at confidence {original_confidence:.2f}. "
+        f"{signal.get('reason', '')}"
+    )
+    safe_signal = dict(signal)
+    safe_signal["action"] = "HOLD"
+    safe_signal["confidence"] = min(float(original_confidence or 0), 0.5)
+    safe_signal["reason"] = reason[:300]
+    add_agent_message(
+        run_id=run_id,
+        agent_name="Risk Guard",
+        agent_role="Chặn signal trễ",
+        layer="risk_mgmt",
+        content=reason,
+        agent_bias="neutral",
+        agent_confidence=safe_signal["confidence"],
+        agent_recommendation="BLOCK",
+    )
+    log.warning("[RiskGuard] Blocked late %s signal after %.1fm", original_action, elapsed_minutes)
+    return safe_signal
+
+
+def _require_deepseek_key():
+    if not _os.environ.get("DEEPSEEK_API_KEY"):
+        raise RuntimeError(f"DEEPSEEK_API_KEY không tìm thấy trong {ENV_FILE}")
+
+
+def _acquire_run_lock():
+    """Prevent cron/manual/API triggers from writing competing bridge signals."""
+    global _RUN_LOCK_HANDLE
+    AGENT_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(AGENT_LOCK_FILE, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log.warning(f"Another agent_runner is active; skipping this run ({AGENT_LOCK_FILE})")
+        fh.close()
+        sys.exit(0)
+    fh.write(f"pid={os.getpid()} started_at={datetime.now(timezone.utc).isoformat()}\n")
+    fh.flush()
+    _RUN_LOCK_HANDLE = fh
+
+
+def _enforce_run_interval(symbol: str, force: bool = False) -> None:
+    """Prevent sequential manual/API/cron runs from hammering the same symbol."""
+    if MIN_RUN_INTERVAL_MINUTES <= 0:
+        return
+    now = datetime.now(timezone.utc)
+    key = symbol.upper()
+    state = {}
+    if RUN_INTERVAL_FILE.exists():
+        try:
+            state = json.loads(RUN_INTERVAL_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            state = {}
+    last_raw = state.get(key)
+    if last_raw and not force:
+        try:
+            last = datetime.fromisoformat(str(last_raw).replace("Z", "+00:00"))
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            elapsed = (now - last).total_seconds() / 60
+            if elapsed < MIN_RUN_INTERVAL_MINUTES:
+                wait = MIN_RUN_INTERVAL_MINUTES - elapsed
+                log.warning(
+                    "Run interval guard: skipping %s after %.1fm; need %.1fm "
+                    "(TRACE_MIN_RUN_INTERVAL_MINUTES=%.1f).",
+                    symbol,
+                    elapsed,
+                    wait,
+                    MIN_RUN_INTERVAL_MINUTES,
+                )
+                sys.exit(0)
+        except Exception:
+            pass
+    RUN_INTERVAL_FILE.parent.mkdir(parents=True, exist_ok=True)
+    state[key] = now.isoformat()
+    tmp = RUN_INTERVAL_FILE.with_suffix(RUN_INTERVAL_FILE.suffix + ".tmp")
+    tmp.write_text(json.dumps(state, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(RUN_INTERVAL_FILE)
 
 
 def _extract_content(state: dict, node_name: str) -> str | None:
@@ -166,6 +292,7 @@ def _parse_final(raw) -> dict:
 
 
 def run_analysis(symbol: str, trade_date: str, run_id: int, past_context: str) -> dict:
+    _require_deepseek_key()
     from tradingagents.graph.trading_graph import TradingAgentsGraph
     from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -174,8 +301,8 @@ def run_analysis(symbol: str, trade_date: str, run_id: int, past_context: str) -
     config = DEFAULT_CONFIG.copy()
     config["llm_provider"]    = "deepseek"
     config["backend_url"]     = "https://api.deepseek.com"
-    config["deep_think_llm"]  = "deepseek-v4-flash"
-    config["quick_think_llm"] = "deepseek-v4-flash"
+    config["deep_think_llm"]  = "deepseek-chat"
+    config["quick_think_llm"] = "deepseek-chat"
     config["max_debate_rounds"]   = 1
     config["checkpoint_enabled"]  = True
     config["online_tools"]        = True
@@ -317,7 +444,10 @@ def main():
     parser.add_argument("--symbol", default="BTC/USDT")
     parser.add_argument("--date",   default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     parser.add_argument("--skip-feedback", action="store_true", help="Bỏ qua feedback collection")
+    parser.add_argument("--force", action="store_true", help="Bỏ qua interval guard cho test thủ công")
     args = parser.parse_args()
+    _acquire_run_lock()
+    _enforce_run_interval(args.symbol, force=args.force)
 
     init_db()
     if FEEDBACK_AVAILABLE:
@@ -358,7 +488,10 @@ def main():
     run_id = create_run(symbol)
 
     try:
+        analysis_started = monotonic()
         signal = run_analysis(symbol, trade_date, run_id, past_context)
+        elapsed_minutes = (monotonic() - analysis_started) / 60
+        signal = _defang_late_trade_signal(signal, elapsed_minutes, run_id)
 
         signal_id = write_signal(
             symbol=symbol,
@@ -373,14 +506,14 @@ def main():
 
         # ── BƯỚC 3b: Ghi vào signal_bridge/signals.db để Freqtrade đọc ──
         try:
-            sys.path.insert(0, "/opt/tracetrader")
+            sys.path.insert(0, str(TRACE_ROOT))
             from signal_bridge.signal_db import (
                 write_signal as bridge_write,
                 init_db as bridge_init_db,
             )
             bridge_init_db()
-            bridge_action = {"SELL": "EXIT"}.get(signal["action"], signal["action"])
-            if bridge_action in ("BUY", "HOLD", "EXIT"):
+            bridge_action = signal["action"] if ENABLE_SHORT_SIGNALS else {"SELL": "EXIT"}.get(signal["action"], signal["action"])
+            if bridge_action in ("BUY", "SELL", "HOLD", "EXIT"):
                 bridge_write(
                     symbol=symbol,
                     action=bridge_action,
@@ -422,7 +555,7 @@ def main():
                     "symbol": symbol, "action": signal["action"],
                     "confidence": signal["confidence"],
                     "expires_at": None,  # will be fetched from DB
-                    "created_at": trade_date + "T00:00:00+00:00",
+                    "created_at": datetime.now(timezone.utc).isoformat(),
                 })
             except Exception as e:
                 log.warning(f"Lifecycle check failed (non-fatal): {e}")

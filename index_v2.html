@@ -155,6 +155,68 @@ tr:hover td{background:var(--s2)}
 .bucket-fill-pos{height:14px;background:var(--buy);border-radius:2px;transition:width .5s}
 .bucket-fill-neg{height:14px;background:var(--sell);border-radius:2px;transition:width .5s}
 .bucket-val{font-size:10px;min-width:50px;text-align:right}
+.control-row{display:grid;grid-template-columns:150px 1fr;gap:10px;align-items:center;margin-bottom:10px}
+.control-label{font-size:10px;color:var(--mu2);text-transform:uppercase;letter-spacing:.5px}
+.select,.input{width:100%;height:30px;border:1px solid var(--bd);border-radius:var(--r);background:var(--s1);color:var(--tx);font-family:var(--font);font-size:11px;padding:0 9px}
+.toggle-line{display:flex;align-items:center;gap:8px;height:30px;color:var(--tx);font-size:11px}
+.toggle-line input{accent-color:var(--buy)}
+.status-list{font-size:10px;line-height:2;color:var(--mu)}
+.status-list strong{color:var(--tx)}
+.link-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+
+@media (max-width: 900px){
+  html,body{font-size:11px;overflow:hidden}
+  .root{grid-template-rows:auto auto minmax(0,1fr)}
+  .top{align-items:flex-start;gap:8px;padding:8px 10px;flex-wrap:wrap}
+  .top>div:first-child{min-width:0;flex:1 1 100%;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+  .logo{font-size:14px}
+  .sep{display:none}
+  .kpi-strip{order:3;width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+  .kpi{align-items:flex-start;min-width:0;padding:6px 7px;border:1px solid var(--bd);border-radius:var(--r);background:var(--s2)}
+  .kv{font-size:14px}
+  .kl{font-size:8px;white-space:nowrap}
+  .top-r{width:100%;justify-content:space-between;gap:6px;flex-wrap:wrap}
+  .btn{min-height:34px;padding:7px 10px;font-size:10px}
+  .tabbar{padding:0 8px;gap:2px;scroll-snap-type:x proximity}
+  .tab{padding:9px 10px;scroll-snap-align:start}
+  .content{padding:10px;min-height:0}
+  .two-pane,.three-pane{grid-template-columns:1fr}
+  .grid5{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .grid4,.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .grid2{grid-template-columns:1fr}
+  .card{padding:9px 10px}
+  .cv{font-size:19px}
+  table{display:block;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch}
+  th,td{padding:7px 8px}
+  .bar-row,.bucket-row{align-items:flex-start}
+  .bar-lbl,.bucket-label{width:82px;text-align:left;white-space:normal}
+  .f-step{padding:8px 9px;gap:8px}
+  .f-num{min-width:38px;font-size:16px}
+  .amsg-body{max-height:140px}
+  .control-row{grid-template-columns:1fr;gap:5px}
+  .select,.input{height:36px;font-size:12px}
+  .toggle-line{height:auto;min-height:36px;align-items:flex-start}
+  .link-row .btn{flex:1 1 145px}
+  #t7>div{grid-template-columns:1fr!important;height:auto!important}
+  #trace-runs{height:auto!important;max-height:220px}
+  #trace-detail{overflow-y:visible!important}
+  #current-regime{align-items:flex-start!important;flex-direction:column}
+  #toast{left:10px;right:10px;bottom:10px;text-align:center}
+}
+
+@media (max-width: 520px){
+  .top{padding:7px 8px}
+  .top-r .btn{flex:1 1 calc(50% - 4px)}
+  .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .grid5,.grid4,.grid3{grid-template-columns:1fr}
+  .compare-grid{grid-template-columns:1fr}
+  .tab{font-size:9px;padding:8px 9px}
+  .content{padding:8px}
+  .f-step{align-items:flex-start}
+  .f-pct{min-width:32px}
+  .bar-row,.bucket-row{gap:5px}
+  .bar-val,.bucket-val{min-width:42px}
+}
 </style>
 </head>
 <body>
@@ -194,6 +256,8 @@ tr:hover td{background:var(--s2)}
   <div class="tab" onclick="go(5)">Thị trường</div>
   <div class="tab" onclick="go(6)">Học phản hồi</div>
   <div class="tab" onclick="go(7)">Lịch sử chạy</div>
+  <div class="tab" onclick="go(8)">Freqtrade</div>
+  <div class="tab" onclick="go(9)">Adaptive Risk</div>
 </div>
 
 <!-- CONTENT -->
@@ -417,6 +481,131 @@ tr:hover td{background:var(--s2)}
     </div>
   </div>
 
+  <!-- Tab 8: Freqtrade Control -->
+  <div id="t8" style="display:none">
+    <div class="two-pane">
+      <div>
+        <div class="section">
+          <div class="sh">Cấu hình chạy Freqtrade</div>
+          <div class="card">
+            <div class="control-row">
+              <div class="control-label">Market Mode</div>
+              <select class="select" id="ft-market-mode">
+                <option value="futures">Futures (Long + Short)</option>
+                <option value="spot">Spot (Long only)</option>
+              </select>
+              <button class="btn" style="margin-left:8px" onclick="switchMarketMode()">⇄ Đổi Mode</button>
+            </div>
+            <div class="control-row">
+              <div class="control-label">Timeframe</div>
+              <select class="select" id="ft-timeframe"></select>
+            </div>
+            <div class="control-row">
+              <div class="control-label">Dry-run</div>
+              <label class="toggle-line">
+                <input type="checkbox" id="ft-dryrun" checked disabled>
+                Luôn bật dry-run khi áp dụng cấu hình từ dashboard
+              </label>
+            </div>
+            <div class="link-row">
+              <button class="btn" onclick="restartFreqtrade()">↻ Restart áp dụng TF</button>
+              <button class="btn" onclick="loadFreqtrade()">↺ Tải lại trạng thái</button>
+              <button class="btn" onclick="openFreqtradeUI()">↗ Mở Freqtrade UI</button>
+            </div>
+            <div style="font-size:10px;color:var(--mu2);margin-top:10px;line-height:1.8">
+              <strong>⇄ Đổi Mode</strong> sẽ backup config, đổi trading_mode/strategy/pairs, ép <strong>dry_run=true</strong>, rồi tự động restart Freqtrade qua <code>docker compose restart</code>.<br>
+              Restart áp dụng TF chỉ thay đổi timeframe, không đổi mode.<br>
+              <br>
+              <strong style="color:#e8a838">⚠ Nếu restart tự động thất bại</strong> — SSH vào server và chạy thủ công:<br>
+              <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;user-select:all">cd /opt/tracetrader/freqtrade &amp;&amp; docker compose restart freqtrade</code><br>
+              Hoặc nếu dùng systemd:<br>
+              <code style="background:var(--bg2);padding:2px 6px;border-radius:4px;user-select:all">sudo systemctl restart freqtrade</code><br>
+              Sau khi restart, nhấn <strong>↺ Tải lại trạng thái</strong> để xác nhận Market Mode đã đổi thành công.
+            </div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Trạng thái live</div>
+          <div class="grid3">
+            <div class="card"><div class="cv" id="ft-live-mode">--</div><div class="cl">Market Mode</div></div>
+            <div class="card"><div class="cv" id="ft-live-tf">--</div><div class="cl">Timeframe live</div></div>
+            <div class="card"><div class="cv" id="ft-live-dry">--</div><div class="cl">Dry-run live</div></div>
+            <div class="card"><div class="cv" id="ft-state">--</div><div class="cl">Bot state</div></div>
+          </div>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="sh">Liên kết UI</div>
+          <div class="card status-list">
+            Freqtrade UI native: <strong id="ft-ui-url">--</strong><br>
+            Dashboard custom: <strong id="ft-dashboard-url">--</strong><br>
+            Strategy: <strong id="ft-strategy">--</strong><br>
+            API user: <strong id="ft-api-user">--</strong>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Đường dẫn deploy</div>
+          <div class="card status-list">
+            Config: <strong id="ft-config-path">--</strong><br>
+            Compose: <strong id="ft-compose-file">--</strong><br>
+            Service: <strong id="ft-service">--</strong>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sh">Kết quả restart gần nhất</div>
+          <div id="ft-restart-log" class="card" style="font-size:10px;white-space:pre-wrap;line-height:1.7;color:var(--mu)">Chưa restart trong phiên này.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Tab 9: Adaptive Risk -->
+  <div id="t9" style="display:none">
+    <div class="section">
+      <div class="grid4">
+        <div class="card"><div class="cv" id="ad-balance">--</div><div class="cl">Current Balance</div></div>
+        <div class="card"><div class="cv" id="ad-dd">--%</div><div class="cl">Drawdown</div></div>
+        <div class="card"><div class="cv" id="ad-stake">--</div><div class="cl">Stake đề xuất</div></div>
+        <div class="card"><div class="cv" id="ad-status">--</div><div class="cl">Safety Status</div></div>
+      </div>
+      <div class="link-row">
+        <button class="btn" onclick="collectOutback()">↺ Thu outback</button>
+        <button class="btn" onclick="runAdaptive(false)">▶ Chạy Agent A/B</button>
+        <button class="btn" onclick="runAdaptive(true)">✓ Chạy & áp dụng dry-run</button>
+        <button class="btn" onclick="loadAdaptive()">↻ Tải lại</button>
+      </div>
+    </div>
+    <div class="two-pane">
+      <div>
+        <div class="section">
+          <div class="sh">So sánh thông số cũ / mới</div>
+          <table>
+            <thead><tr><th>Thông số</th><th>Cũ</th><th>Mới</th></tr></thead>
+            <tbody id="ad-compare"></tbody>
+          </table>
+        </div>
+        <div class="section">
+          <div class="sh">Log đề xuất gần đây</div>
+          <table>
+            <thead><tr><th>ID</th><th>Market</th><th>Sample</th><th>Status</th><th>Applied</th></tr></thead>
+            <tbody id="ad-log"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <div class="section">
+          <div class="sh">Reasoning Agent A / B / Manager</div>
+          <div id="ad-reasoning" class="card" style="font-size:10px;white-space:pre-wrap;line-height:1.7;max-height:360px;overflow-y:auto;color:var(--tx)">Chưa có proposal.</div>
+        </div>
+        <div class="section">
+          <div class="sh">Outback mới nhất</div>
+          <div id="ad-outback" class="card status-list">Chưa có outback.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
 </div><!-- /content -->
 </div><!-- /root -->
 
@@ -430,7 +619,7 @@ const S = {
   tab: 0, ws: null,
   overview: null, signals: null, execution: null, outcomes: null,
   agents: null, regimes: null, feedback: null,
-  runs: [], selectedRunId: null,
+  runs: [], selectedRunId: null, freqtrade: null, adaptive: null,
 };
 
 const $=id=>document.getElementById(id);
@@ -443,19 +632,21 @@ function toast(m,d=3000){const e=$('toast');e.textContent=m;e.classList.add('sho
 setInterval(()=>$('clk').textContent=new Date().toLocaleTimeString('vi-VN'),1000);
 
 // ── Tabs ──────────────────────────────────────────────────────────
-const TABS = ['t0','t1','t2','t3','t4','t5','t6','t7'];
+const TABS = ['t0','t1','t2','t3','t4','t5','t6','t7','t8','t9'];
+const TAB_HASHES = ['overview','signals','execution','outcomes','agents','market','feedback','runs','freqtrade','adaptive'];
 function go(idx){
   S.tab = idx;
   TABS.forEach((t,i)=>{
     $(t).style.display = i===idx?'':'none';
     document.querySelectorAll('.tab')[i].classList.toggle('active', i===idx);
   });
+  if(TAB_HASHES[idx]) history.replaceState(null, '', '#'+TAB_HASHES[idx]);
   loadTab(idx);
 }
 
 async function loadTab(idx){
   const loaders = [loadOverview, loadSignals, loadExecution, loadOutcomes,
-                   loadAgents, loadRegimes, loadFeedback, loadTraceRuns];
+                   loadAgents, loadRegimes, loadFeedback, loadTraceRuns, loadFreqtrade, loadAdaptive];
   try{ await loaders[idx](); } catch(e){ console.warn('Tab load:', e); }
 }
 
@@ -909,6 +1100,238 @@ function toggleTrace(hdr){
   body.classList.toggle('open');
 }
 
+// ── Tab 8: Freqtrade ──────────────────────────────────────────────
+function publicFreqtradeUrl(url){
+  try{
+    const u = new URL(url);
+    if(['127.0.0.1','0.0.0.0','localhost'].includes(u.hostname) && location.hostname){
+      u.hostname = location.hostname;
+    }
+    return u.toString().replace(/\/$/,'');
+  }catch{
+    return `http://${location.hostname}:8080`;
+  }
+}
+
+async function loadFreqtrade(){
+  const r = await fetch(API+'/api/freqtrade/config');
+  const d = await r.json();
+  S.freqtrade = d;
+  const sel = $('ft-timeframe');
+  if(sel){
+    const opts = d.available_timeframes||['1m','5m','15m','30m','1h','4h','1d'];
+    sel.innerHTML = opts.map(tf=>`<option value="${tf}" ${tf===(d.timeframe||d.live_timeframe)?'selected':''}>${tf}</option>`).join('');
+  }
+  // Market mode select
+  const msel = $('ft-market-mode');
+  if(msel){
+    const curMode = d.trading_mode || 'futures';
+    msel.value = curMode;
+  }
+  $('ft-dryrun').checked = true;
+  const liveMode = d.live_trading_mode || d.trading_mode || '--';
+  $('ft-live-mode').textContent = liveMode.toUpperCase();
+  $('ft-live-mode').className = 'cv ' + (liveMode==='futures' ? 'neu' : 'pos');
+  $('ft-live-tf').textContent = d.live_timeframe || d.timeframe || '--';
+  $('ft-live-dry').textContent = d.live_dry_run===true || d.dry_run===true ? 'TRUE' : 'FALSE';
+  $('ft-live-dry').className = 'cv '+((d.live_dry_run===true || d.dry_run===true)?'pos':'neg');
+  $('ft-state').textContent = d.state || '--';
+  $('ft-strategy').textContent = d.strategy || '--';
+  $('ft-api-user').textContent = d.api_user || '--';
+  $('ft-config-path').textContent = d.config_path || '--';
+  $('ft-compose-file').textContent = d.compose_file || '--';
+  $('ft-service').textContent = d.service || '--';
+  const ui = publicFreqtradeUrl(d.ui_url||'http://127.0.0.1:8080');
+  $('ft-ui-url').textContent = ui;
+  $('ft-dashboard-url').textContent = location.origin;
+}
+
+async function switchMarketMode(){
+  const mode = $('ft-market-mode').value;
+  const modeLabel = mode === 'futures' ? 'FUTURES (Long+Short, AISignalLongShortStrategy)' : 'SPOT (Long only, AISignalStrategy)';
+  $('ft-restart-log').textContent = `⏳ Đang kiểm tra điều kiện trước khi đổi sang ${mode.toUpperCase()}...`;
+  // ── Preflight check ──────────────────────────────────────────
+  try{
+    const pf = await fetch(API+'/api/freqtrade/market-mode/preflight');
+    const pd = await pf.json();
+    if(pd.agent_running){
+      $('ft-restart-log').textContent = `🚫 Không thể đổi mode:\n${pd.agent_reason}\n\nHãy chờ TradingAgents hoàn tất rồi thử lại.`;
+      toast('⚠ TradingAgents đang chạy — không thể đổi mode', 6000);
+      return;
+    }
+    if(pd.open_trades > 0){
+      const tradeList = (pd.open_trade_list||[]).join('\n  ');
+      $('ft-restart-log').textContent = `🚫 Không thể đổi mode:\nCòn ${pd.open_trades} lệnh đang mở:\n  ${tradeList}\n\nHãy đóng tất cả lệnh trong Freqtrade rồi thử lại.`;
+      toast(`⚠ Còn ${pd.open_trades} lệnh mở — không thể đổi mode`, 6000);
+      return;
+    }
+  }catch(e){
+    $('ft-restart-log').textContent = `⚠ Không thể kiểm tra điều kiện: ${e.message}\nCó thể API đang offline.`;
+    toast('⚠ Preflight check lỗi', 5000);
+    return;
+  }
+  // ── Confirm ──────────────────────────────────────────────────
+  if(!confirm(`✅ Điều kiện OK.\n\nĐổi sang ${modeLabel}?\n\nSẽ:\n• Backup config\n• Đổi trading_mode + strategy + pairs\n• Ép dry_run=true\n• Restart Freqtrade container`)) return;
+  $('ft-restart-log').textContent = `⏳ Đang đổi sang ${mode.toUpperCase()}...`;
+  try{
+    const r = await fetch(API+'/api/freqtrade/config/market-mode',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mode})
+    });
+    const d = await r.json();
+    if(!r.ok){
+      const detail = d.detail || d;
+      const msg = typeof detail === 'object'
+        ? (detail.message || JSON.stringify(detail))
+        : String(detail);
+      $('ft-restart-log').textContent = `🚫 Lỗi đổi mode:\n${msg}`;
+      toast('⚠ Đổi market mode lỗi', 5000);
+      return;
+    }
+    if(d.status === 'no_change'){
+      $('ft-restart-log').textContent = `ℹ️ ${d.message}`;
+      toast(`ℹ️ ${d.message}`);
+      return;
+    }
+    $('ft-restart-log').textContent =
+      `✅ OK: ${d.old_mode?.toUpperCase()||'--'} → ${d.new_mode?.toUpperCase()}\n`+
+      `Strategy: ${d.strategy}\n`+
+      `Pairs: ${(d.pair_whitelist||[]).join(', ')}\n`+
+      `dry_run: true\n`+
+      `state: ${d.state||'--'}\n`+
+      `backup: ${d.backup}\n`+
+      `${d.restart?.stdout||''}`;
+    toast(`⇄ Freqtrade đã đổi sang ${d.new_mode?.toUpperCase()}`);
+    setTimeout(loadFreqtrade, 4000);
+  }catch(e){
+    $('ft-restart-log').textContent = `🚫 Lỗi đổi mode: ${e.message}`;
+    toast('⚠ Đổi market mode lỗi', 5000);
+  }
+}
+
+async function restartFreqtrade(){
+  const timeframe = $('ft-timeframe').value;
+  if(!confirm(`Restart Freqtrade với timeframe ${timeframe} và dry_run=true?`)) return;
+  $('ft-restart-log').textContent = `Đang ghi config và restart Freqtrade (${timeframe})...`;
+  try{
+    const r = await fetch(API+'/api/freqtrade/config/restart',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({timeframe})
+    });
+    const d = await r.json();
+    if(!r.ok) throw new Error(typeof d.detail==='string'?d.detail:JSON.stringify(d.detail||d));
+    $('ft-restart-log').textContent =
+      `OK: ${d.old_timeframe||'--'} → ${d.timeframe}\n`+
+      `dry_run: ${d.live_dry_run ?? d.dry_run}\n`+
+      `state: ${d.state||'--'}\n`+
+      `backup: ${d.backup}\n`+
+      `${d.restart?.stdout||''}`;
+    toast(`↻ Freqtrade đã restart: ${d.timeframe}`);
+    setTimeout(loadFreqtrade, 3000);
+  }catch(e){
+    $('ft-restart-log').textContent = `Lỗi restart: ${e.message}`;
+    toast('⚠ Restart Freqtrade lỗi', 5000);
+  }
+}
+
+function openFreqtradeUI(){
+  const ui = $('ft-ui-url').textContent || publicFreqtradeUrl(S.freqtrade?.ui_url||'http://127.0.0.1:8080');
+  window.open(ui, '_blank', 'noopener,noreferrer');
+}
+
+// ── Tab 9: Adaptive Risk ─────────────────────────────────────────
+function adaptiveLatest(){
+  const p = S.adaptive?.proposals?.[0];
+  return p || null;
+}
+
+function renderAdaptive(){
+  const d = S.adaptive || {};
+  const out = d.latest_outback || {};
+  const p = adaptiveLatest();
+  const final = p?.final_config || {};
+  const old = p?.old_config || {};
+  $('ad-balance').textContent = out.current_balance ? Number(out.current_balance).toFixed(2) : '--';
+  $('ad-dd').textContent = out.drawdown_pct != null ? Number(out.drawdown_pct).toFixed(2)+'%' : '--%';
+  $('ad-stake').textContent = final.stake_amount ? Number(final.stake_amount).toFixed(2) : '--';
+  $('ad-status').textContent = p?.safety_status || '--';
+  $('ad-status').className = 'cv '+(p?.safety_status==='BLOCKED'?'neg':p?.safety_status?'pos':'');
+
+  const rows = [
+    ['stake_amount', old.stake_amount, final.stake_amount],
+    ['max_open_trades', old.max_open_trades, final.max_open_trades],
+    ['stoploss', old.stoploss, final.stoploss_pct ? '-'+Number(final.stoploss_pct).toFixed(2)+'%' : undefined],
+    ['take_profit', old.minimal_roi ? JSON.stringify(old.minimal_roi) : undefined, final.take_profit_pct ? Number(final.take_profit_pct).toFixed(2)+'%' : undefined],
+    ['min_volume_ratio', '--', final.min_volume_ratio],
+  ];
+  $('ad-compare').innerHTML = rows.map(r=>`<tr><td>${r[0]}</td><td>${esc(r[1]??'--')}</td><td><strong>${esc(r[2]??'--')}</strong></td></tr>`).join('');
+
+  $('ad-log').innerHTML = (d.proposals||[]).map(x=>`<tr>
+    <td>#${x.id}</td>
+    <td>${x.market}</td>
+    <td>${x.sample_size}</td>
+    <td><span class="${x.safety_status==='BLOCKED'?'neg':'pos'}">${x.safety_status}</span></td>
+    <td>${x.applied?'YES':'NO'}</td>
+  </tr>`).join('') || '<tr><td colspan="5" class="empty">Chưa có adaptive proposal</td></tr>';
+
+  if(p){
+    const q = p.quant_proposal || {};
+    const c = p.risk_critique || {};
+    $('ad-reasoning').textContent =
+      `Agent A:\n${q.reasoning||''}\n\n`+
+      `Evidence:\n${JSON.stringify(q.evidence||{}, null, 2)}\n\n`+
+      `Agent B:\n${c.decision||'--'} | flags: ${(c.risk_flags||[]).join(', ')||'none'}\n${c.reasoning||''}\n\n`+
+      `Manager:\n${p.safety_status}\n${p.manager_reasoning||''}`;
+  } else {
+    $('ad-reasoning').textContent = 'Chưa có proposal.';
+  }
+  $('ad-outback').innerHTML = out.id ? `
+    ID: <strong>#${out.id}</strong><br>
+    Symbol: <strong>${esc(out.symbol)}</strong><br>
+    Market: <strong>${esc(out.market)}</strong><br>
+    Timeframe: <strong>${esc(out.timeframe)}</strong><br>
+    Open trades: <strong>${out.open_trade_count||0}</strong><br>
+    Closed trades: <strong>${out.closed_trade_count||0}</strong><br>
+    Created: <strong>${fmtAge(out.created_at)}</strong>
+  ` : 'Chưa có outback.';
+}
+
+async function loadAdaptive(){
+  const r = await fetch(API+'/api/adaptive/risk');
+  S.adaptive = await r.json();
+  renderAdaptive();
+}
+
+async function collectOutback(){
+  try{
+    const r = await fetch(API+'/api/outback/freqtrade/collect',{method:'POST'});
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || JSON.stringify(d));
+    toast('↺ Đã thu outback');
+    await loadAdaptive();
+  }catch(e){ toast('⚠ Thu outback lỗi: '+e.message, 5000); }
+}
+
+async function runAdaptive(applyConfig){
+  const msg = applyConfig
+    ? 'Chạy adaptive và áp dụng vào config dry-run?'
+    : 'Chạy adaptive để tạo proposal?';
+  if(!confirm(msg)) return;
+  try{
+    const r = await fetch(API+'/api/adaptive/risk/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:'BTC/USDT',market:'futures',apply_config:applyConfig,restart:false})
+    });
+    const d = await r.json();
+    if(!r.ok || d.error) throw new Error(d.error || JSON.stringify(d.detail||d));
+    toast(applyConfig?'✓ Đã áp dụng config adaptive':'✓ Đã tạo proposal adaptive');
+    await loadAdaptive();
+  }catch(e){ toast('⚠ Adaptive lỗi: '+e.message, 6000); }
+}
+
 // ── Triggers ──────────────────────────────────────────────────────
 async function triggerRun(){
   try{const r=await fetch(API+'/api/trigger-run',{method:'POST'});const d=await r.json();toast(d.status==='triggered'?'▶ Đã kích hoạt AI':'⚠ '+d.error);}catch{toast('⚠ API không phản hồi');}
@@ -920,6 +1343,12 @@ async function triggerFeedback(){
 // ── Init ──────────────────────────────────────────────────────────
 async function init(){
   try{
+    const hashIdx = TAB_HASHES.indexOf(location.hash.replace('#',''));
+    if(hashIdx >= 0) S.tab = hashIdx;
+    TABS.forEach((t,i)=>{
+      $(t).style.display = i===S.tab?'':'none';
+      document.querySelectorAll('.tab')[i].classList.toggle('active', i===S.tab);
+    });
     const r = await fetch(API+'/api/dashboard/overview');
     S.overview = await r.json();
     renderTopKPIs({});
