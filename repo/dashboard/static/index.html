@@ -163,6 +163,9 @@ tr:hover td{background:var(--s2)}
 .status-list{font-size:10px;line-height:2;color:var(--mu)}
 .status-list strong{color:var(--tx)}
 .link-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+/* Adaptive Risk */
+.ad-reasoning-box{font-size:10px;white-space:pre-wrap;line-height:1.7;max-height:360px;overflow-y:auto;overflow-x:auto;word-break:break-word;color:var(--tx)}
+#t9 .link-row{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
 
 @media (max-width: 900px){
   html,body{font-size:11px;overflow:hidden}
@@ -197,6 +200,10 @@ tr:hover td{background:var(--s2)}
   .select,.input{height:36px;font-size:12px}
   .toggle-line{height:auto;min-height:36px;align-items:flex-start}
   .link-row .btn{flex:1 1 145px}
+  /* Adaptive Risk mobile */
+  .ad-reasoning-box{max-height:220px;font-size:9px}
+  #t9 .link-row{grid-template-columns:1fr 1fr}
+  #t9 .link-row .btn{flex:none;width:100%;min-height:36px}
   #t7>div{grid-template-columns:1fr!important;height:auto!important}
   #trace-runs{height:auto!important;max-height:220px}
   #trace-detail{overflow-y:visible!important}
@@ -210,6 +217,8 @@ tr:hover td{background:var(--s2)}
   .kpi-strip{grid-template-columns:repeat(2,minmax(0,1fr))}
   .grid5,.grid4,.grid3{grid-template-columns:1fr}
   .compare-grid{grid-template-columns:1fr}
+  .ad-reasoning-box{max-height:160px}
+  #t9 .link-row{grid-template-columns:1fr}
   .tab{font-size:9px;padding:8px 9px}
   .content{padding:8px}
   .f-step{align-items:flex-start}
@@ -580,7 +589,7 @@ tr:hover td{background:var(--s2)}
       <div>
         <div class="section">
           <div class="sh">Reasoning Agent A / B / Manager</div>
-          <div id="ad-reasoning" class="card" style="font-size:10px;white-space:pre-wrap;line-height:1.7;max-height:360px;overflow-y:auto;color:var(--tx)">Chưa có proposal.</div>
+          <div id="ad-reasoning" class="card ad-reasoning-box">Chưa có proposal.</div>
         </div>
         <div class="section">
           <div class="sh">Outback mới nhất</div>

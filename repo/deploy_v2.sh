@@ -115,6 +115,14 @@ if [ ! -f "$FREQTRADE_DIR/user_data/config.json" ]; then
   done
 fi
 
+# ── Validate JSON config.json trước khi xử lý ─────────────────────────────
+if [ -f "$FREQTRADE_DIR/user_data/config.json" ]; then
+  if ! python3 -c "import json,sys; json.load(open(sys.argv[1]))" \
+       "$FREQTRADE_DIR/user_data/config.json" 2>/dev/null; then
+    die "config.json bị lỗi JSON — kiểm tra single quote, trailing comma, ... Dừng deploy."
+  fi
+fi
+
 # ── Tự động điền allowed_chat_ids trong config.json từ .env ───────────────
 # (allowed_chat_ids là mảng — Freqtrade KHÔNG hỗ trợ override qua env var)
 _tg_chat_id=""
