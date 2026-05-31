@@ -244,10 +244,11 @@ crontab -l 2>/dev/null | sed '/# TraceTradeLab begin/,/# TraceTradeLab end/d' > 
 cat >> "$CRON_TMP" <<EOF
 
 # TraceTradeLab begin
-2 0,4,8,12,16,20 * * * cd $DASHBOARD_DIR && REPO_ROOT=$REPO_ROOT TRACE_ENV_FILE=$REPO_ROOT/.env $PYTHON agent_runner_v2.py --symbol BTC/USDT >> $LOG_DIR/cron.log 2>&1
-5 0,4,8,12,16,20 * * * cd $DASHBOARD_DIR && REPO_ROOT=$REPO_ROOT $PYTHON market_regime.py >> $LOG_DIR/regime.log 2>&1
-*/5 * * * * cd $DASHBOARD_DIR && REPO_ROOT=$REPO_ROOT $PYTHON signal_lifecycle.py >> $LOG_DIR/lifecycle.log 2>&1
-32 * * * * cd $DASHBOARD_DIR && REPO_ROOT=$REPO_ROOT $PYTHON feedback_collector.py >> $LOG_DIR/feedback.log 2>&1
+2  0,4,8,12,16,20 * * * cd $DASHBOARD_DIR && TRACE_ROOT=$REPO_ROOT TRACE_ENV_FILE=$REPO_ROOT/.env $PYTHON agent_runner_v2.py --symbol BTC/USDT >> $LOG_DIR/btc_cron.log 2>&1
+12 0,4,8,12,16,20 * * * cd $DASHBOARD_DIR && TRACE_ROOT=$REPO_ROOT TRACE_ENV_FILE=$REPO_ROOT/.env $PYTHON agent_runner_v2.py --symbol ETH/USDT >> $LOG_DIR/eth_cron.log 2>&1
+5  0,4,8,12,16,20 * * * cd $DASHBOARD_DIR && TRACE_ROOT=$REPO_ROOT $PYTHON market_regime.py >> $LOG_DIR/regime.log 2>&1
+*/5 * * * * cd $DASHBOARD_DIR && TRACE_ROOT=$REPO_ROOT $PYTHON signal_lifecycle.py >> $LOG_DIR/lifecycle.log 2>&1
+32 * * * * cd $DASHBOARD_DIR && TRACE_ROOT=$REPO_ROOT $PYTHON feedback_collector.py >> $LOG_DIR/feedback.log 2>&1
 # TraceTradeLab end
 EOF
 crontab "$CRON_TMP"

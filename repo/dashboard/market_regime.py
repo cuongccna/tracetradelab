@@ -32,7 +32,7 @@ except ImportError:
     log.warning("ccxt not installed — pip install ccxt")
 
 # ─── DB ──────────────────────────────────────────────────────────
-sys.path.insert(0, "/opt/TraceTradeLab/dashboard")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 100) -> pd.DataFrame | None:
