@@ -11,8 +11,10 @@ the LLM is invoked and injects them into the prompt as structured blocks:
   1. News headlines     — Yahoo Finance (institutional framing)
   2. StockTwits messages — retail-trader posts indexed by cashtag, with
                            user-labeled Bullish/Bearish sentiment tags
-  3. X/Twitter posts     — official recent search when credentials exist
-  4. Reddit posts        — optional community posts when reachable
+  3. Crypto RSS + market mood — proxy-routed crypto news, Fear & Greed, and
+                                CoinGecko market/trending context
+  4. X/Twitter posts     — official recent search when credentials exist
+  5. Reddit posts        — optional community posts when reachable
 
 The agent does not use tool-calling; the data is in the prompt from
 turn 0. The LLM produces the sentiment report in a single invocation.
@@ -28,6 +30,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_language_instruction,
     get_news,
 )
+from tradingagents.dataflows.crypto_full import fetch_crypto_full_block
 from tradingagents.dataflows.reddit import fetch_reddit_posts
 from tradingagents.dataflows.stocktwits import fetch_stocktwits_messages
 from tradingagents.dataflows.twitter import fetch_twitter_posts
@@ -56,6 +59,7 @@ def create_sentiment_analyst(llm):
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
         stocktwits_block = fetch_stocktwits_messages(ticker, limit=30)
+        crypto_full_block = fetch_crypto_full_block(ticker, max_items=12)
         twitter_block = fetch_twitter_posts(ticker, limit=20)
         reddit_block = fetch_reddit_posts(ticker)
 
@@ -65,6 +69,7 @@ def create_sentiment_analyst(llm):
             end_date=end_date,
             news_block=news_block,
             stocktwits_block=stocktwits_block,
+            crypto_full_block=crypto_full_block,
             twitter_block=twitter_block,
             reddit_block=reddit_block,
         )
@@ -107,6 +112,7 @@ def _build_system_message(
     end_date: str,
     news_block: str,
     stocktwits_block: str,
+    crypto_full_block: str,
     twitter_block: str,
     reddit_block: str,
 ) -> str:
@@ -129,6 +135,13 @@ Fast-moving signal. Each message carries a user-labeled sentiment tag (Bullish /
 {stocktwits_block}
 <end_of_stocktwits>
 
+### Crypto RSS + market mood — proxy-routed fallback/augmentation
+Crypto-native RSS/news context, CoinGecko market/trending snapshot, and Fear & Greed. This is not social-media engagement data; use it to identify crypto-specific catalysts, macro crypto mood, and ticker-relevant narratives when X/Reddit are unavailable or weak.
+
+<start_of_crypto_full>
+{crypto_full_block}
+<end_of_crypto_full>
+
 ### X/Twitter recent search — official API when credentials are available
 Fast-moving public discourse. Treat it as noisy attention and narrative data, not verified fact. Engagement metrics can highlight what the market is discussing.
 
@@ -147,26 +160,28 @@ Community discussion. Engagement signal via upvote score and comment count. Subr
 
 1. **Read the StockTwits Bullish/Bearish ratio as a leading retail-sentiment signal.** A 70/30 bullish/bearish split is moderately bullish; ≥90/10 may indicate over-extension and contrarian risk; 50/50 is uncertainty. Sample size matters — base rates on the actual message count, not percentages alone.
 
-2. **Look for cross-source divergences.** If news framing is bearish but StockTwits/X are overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious).
+2. **Use Crypto RSS + market mood as a narrative/catalyst layer, not as a social replacement.** Cointelegraph/Decrypt/Coindesk/BeInCrypto headlines can explain catalysts and risks; Fear & Greed and CoinGecko trending can show broader crypto mood. Do not treat RSS keyword sentiment as equivalent to human social conviction.
 
-3. **Weight X/Reddit posts by engagement.** A high-like/high-reply X post or a 400-upvote / 200-comment Reddit thread reflects community attention; a low-engagement post is noise. Read the text excerpts for context.
+3. **Look for cross-source divergences.** If crypto RSS framing is bearish but StockTwits/X are overwhelmingly bullish, that mismatch is itself a signal — it can mean retail is leaning into a thesis the news flow hasn't caught up to (or vice versa, that retail is chasing while institutions are cautious).
 
-4. **Distinguish opinion from event.** A news headline ("Nvidia announces $500M Corning deal") is an event; a StockTwits post ("buying NVDA, this is going to moon") is opinion. Both are inputs but should be weighted differently in your conclusions.
+4. **Weight X/Reddit posts by engagement when available.** A high-like/high-reply X post or a 400-upvote / 200-comment Reddit thread reflects community attention; a low-engagement post is noise. If X/Reddit are blocked or credit-limited, explicitly lean more on StockTwits + Crypto RSS and say confidence is lower.
 
-5. **Identify recurring narrative themes.** What topic keeps coming up across sources? That's the dominant narrative driving current sentiment.
+5. **Distinguish opinion from event.** A news headline is an event; a StockTwits/X/Reddit post is opinion. Both are inputs but should be weighted differently in your conclusions.
 
-6. **Be honest about data limits.** If StockTwits returned only a handful of messages, or one or more sources returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this caveat explicitly. If X or Reddit is unavailable due to API/rate-limit/IP blocks, say so.
+6. **Identify recurring narrative themes.** What topic keeps coming up across sources? That's the dominant narrative driving current sentiment.
 
-7. **Identify catalysts and risks** that emerge across sources — news of upcoming earnings, product launches, competitive threats, macro headlines, etc.
+7. **Be honest about data limits.** If StockTwits returned only a handful of messages, or one or more sources returned an "<unavailable>" placeholder, the sentiment read is less robust — flag this caveat explicitly. If X or Reddit is unavailable due to API/rate-limit/IP blocks, say so. If Crypto RSS has no direct ticker matches, treat it as macro crypto context only.
 
-8. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
+8. **Identify catalysts and risks** that emerge across sources — ETF flows, regulation, hacks/exploits, liquidity events, protocol upgrades, exchange news, and macro crypto headlines.
+
+9. **Past sentiment is not predictive.** Frame your conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
 
 ## Output
 
 Produce a sentiment report covering, in order:
 
 1. **Overall sentiment direction** — Bullish / Bearish / Neutral / Mixed — with a brief confidence note based on data quality and sample size.
-2. **Source-by-source breakdown** — what each of news / StockTwits / X-Twitter / Reddit is telling you, with specific evidence (cite message counts, ratios, notable posts).
+2. **Source-by-source breakdown** — what each of news / StockTwits / Crypto RSS + market mood / X-Twitter / Reddit is telling you, with specific evidence (cite message counts, ratios, notable posts, and headline counts).
 3. **Divergences, alignments, and key narratives** across sources.
 4. **Catalysts and risks** surfaced by the data.
 5. **Markdown table** at the end summarizing key sentiment signals, their direction, source, and supporting evidence.

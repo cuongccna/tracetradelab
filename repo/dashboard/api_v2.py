@@ -23,6 +23,7 @@ DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
 TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
 DASHBOARD_DIR = Path(os.getenv("TRACE_DASHBOARD_DIR", str(TRACE_ROOT / "dashboard")))
 LOG_DIR = Path(os.getenv("TRACE_LOG_DIR", str(TRACE_ROOT / "logs")))
+TRADINGAGENTS_SRC = Path(os.getenv("TRADINGAGENTS_SRC", str(TRACE_ROOT / "tradingagents-src")))
 VENV_PYTHON = os.getenv("TRACE_VENV_PYTHON", str(TRACE_ROOT / ".venv/bin/python"))
 FREQTRADE_CONFIG_PATH = Path(
     os.getenv("FREQTRADE_CONFIG_PATH", str(TRACE_ROOT / "freqtrade/user_data/config.json"))
@@ -41,6 +42,7 @@ VALID_TIMEFRAMES = (
     "1d",
 )
 
+sys.path.insert(0, str(TRADINGAGENTS_SRC))
 sys.path.insert(0, str(DASHBOARD_DIR))
 
 from db_v2 import (
@@ -84,6 +86,15 @@ try:
     ADAPTIVE_OK = True
 except ImportError:
     ADAPTIVE_OK = False
+
+try:
+    from tradingagents.dataflows.crypto_full import (
+        fetch_or_load_crypto_full_data,
+        format_crypto_full_block,
+    )
+    CRYPTO_FULL_OK = True
+except ImportError:
+    CRYPTO_FULL_OK = False
 
 log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -357,6 +368,20 @@ async def dashboard_regimes():
 async def dashboard_feedback():
     """Tab 7 — Feedback Learning."""
     return get_feedback_learning_stats()
+
+
+@app.get("/api/crypto-full")
+async def crypto_full(symbol: str = Query("BTC")):
+    """Proxy-routed crypto RSS + market mood data used by Sentiment Analyst."""
+    if not CRYPTO_FULL_OK:
+        return {"error": "crypto_full dataflow not available"}
+    data = fetch_or_load_crypto_full_data()
+    return {
+        "symbol": symbol,
+        "status": "ok" if data else "unavailable",
+        "block": format_crypto_full_block(symbol, data) if data else "",
+        "data": data,
+    }
 
 
 # ─── Trace / Lineage endpoints ────────────────────────────────────

@@ -1,1 +1,6 @@
 repo/freqtrade/.env.example
+results/10_crypto_full_fetcher.json
+10_crypto_full_fetcher.json
+crypto_full_fetcher_v2.py
+.gitignore
+crypto_full_fetcher.py

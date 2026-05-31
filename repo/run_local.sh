@@ -70,6 +70,8 @@ case "${CMD}" in
     "${PYTHON}" -c "import sys; sys.path.insert(0,'${DASHBOARD}'); from signal_lifecycle import validate_signal; print('✅ signal_lifecycle OK')"
     echo "--- telegram_reporter import ---"
     "${PYTHON}" -c "import sys; sys.path.insert(0,'${DASHBOARD}'); import telegram_reporter; print('✅ telegram_reporter OK')"
+    echo "--- crypto_full dataflow import ---"
+    "${PYTHON}" -c "import sys; sys.path.insert(0,'${ROOT}/tradingagents-src'); from tradingagents.dataflows.crypto_full import fetch_crypto_full_block; print('✅ crypto_full OK')"
     echo ""
     echo "✅ Tất cả module import thành công"
     ;;
