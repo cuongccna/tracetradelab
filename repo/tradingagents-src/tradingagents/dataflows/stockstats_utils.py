@@ -9,8 +9,10 @@ from typing import Annotated
 import os
 from .config import get_config
 from .utils import safe_ticker_component
+from .proxy import apply_proxy_env
 
 logger = logging.getLogger(__name__)
+apply_proxy_env()
 
 
 def yf_retry(func, max_retries=3, base_delay=2.0):

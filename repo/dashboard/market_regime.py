@@ -15,13 +15,33 @@ Gọi từ: agent_runner_v2.py trước mỗi run
          cron riêng mỗi 1h để log lịch sử
 """
 
+import os
 import sys, logging
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 log = logging.getLogger(__name__)
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
+ENV_FILE = Path(os.getenv("TRACE_ENV_FILE", str(TRACE_ROOT / ".env")))
+
+
+def _load_env_defaults() -> None:
+    if not ENV_FILE.exists():
+        return
+    for line in ENV_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_env_defaults()
+_LAST_FETCH_DIAGNOSTIC = ""
 
 # ─── CCXT import ─────────────────────────────────────────────────
 try:
@@ -29,25 +49,186 @@ try:
     CCXT_OK = True
 except ImportError:
     CCXT_OK = False
-    log.warning("ccxt not installed — pip install ccxt")
+    log.error("ccxt not installed in this venv — pip install ccxt. Market regime will use fallback data if available.")
 
 # ─── DB ──────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+def _proxy_url() -> str | None:
+    for key in (
+        "TRACE_HTTPS_PROXY",
+        "TRACE_HTTP_PROXY",
+        "TRACE_ALL_PROXY",
+        "HTTPS_PROXY",
+        "HTTP_PROXY",
+        "ALL_PROXY",
+        "TWOCAPTCHA_PROXY_URI",
+        "TWO_CAPTCHA_PROXY_URI",
+        "CAPTCHA_PROXY_URI",
+    ):
+        value = os.getenv(key)
+        if value:
+            return _normalize_proxy_url(value.strip())
+    return None
+
+
+def _normalize_proxy_url(value: str) -> str:
+    if "://" not in value:
+        return value
+    parsed = urlsplit(value)
+    netloc = parsed.netloc
+    if "@" in netloc:
+        return value
+    parts = netloc.split(":")
+    if len(parts) >= 4 and parts[1].isdigit():
+        host = parts[0]
+        port = parts[1]
+        username = parts[2]
+        password = ":".join(parts[3:])
+        return urlunsplit((parsed.scheme, f"{username}:{password}@{host}:{port}", parsed.path, parsed.query, parsed.fragment))
+    return value
+
+
+def _ccxt_config() -> dict:
+    cfg = {
+        "enableRateLimit": True,
+        "timeout": int(os.getenv("TRACE_CCXT_TIMEOUT_MS", "20000")),
+    }
+    proxy = _proxy_url()
+    if proxy:
+        cfg["proxies"] = {"http": proxy, "https": proxy}
+    return cfg
+
+
+def _diagnose_ccxt_error(exc: Exception) -> str:
+    name = type(exc).__name__
+    text = str(exc)
+    low = text.lower()
+    if "451" in text or "restricted location" in low:
+        return f"binance_geo_or_ip_block:{name}:{text[:180]}"
+    if "429" in text or "rate limit" in low or "too many" in low:
+        return f"binance_rate_limited:{name}:{text[:180]}"
+    if "timeout" in low or name in {"RequestTimeout", "TimeoutError"}:
+        return f"binance_timeout:{name}:{text[:180]}"
+    if "403" in text or "forbidden" in low:
+        return f"binance_forbidden_or_waf:{name}:{text[:180]}"
+    return f"binance_fetch_error:{name}:{text[:180]}"
+
+
+def _ticker_for_yfinance(symbol: str) -> str:
+    base = symbol.split("/", 1)[0].split(":", 1)[0].upper()
+    return f"{base}-USD"
+
+
+def _timeframe_to_yf_interval(timeframe: str) -> tuple[str, str]:
+    mapping = {
+        "15m": ("15m", "30d"),
+        "30m": ("30m", "60d"),
+        "1h": ("1h", "730d"),
+        "2h": ("1h", "730d"),
+        "4h": ("1h", "730d"),
+        "1d": ("1d", "5y"),
+    }
+    return mapping.get(timeframe, ("1h", "730d"))
+
+
 def fetch_ohlcv(symbol: str, timeframe: str = "1h", limit: int = 100) -> pd.DataFrame | None:
-    """Lấy OHLCV từ Binance qua CCXT."""
+    """Lấy OHLCV từ Binance qua CCXT, fallback sang yfinance nếu Binance lỗi."""
+    global _LAST_FETCH_DIAGNOSTIC
+    _LAST_FETCH_DIAGNOSTIC = ""
+    proxy = _proxy_url()
+    if proxy:
+        os.environ.setdefault("HTTPS_PROXY", proxy)
+        os.environ.setdefault("HTTP_PROXY", proxy)
     if not CCXT_OK:
-        return None
+        log.error("fetch_ohlcv skipped Binance CCXT: ccxt not installed")
+        _LAST_FETCH_DIAGNOSTIC = "ccxt_not_installed"
+    else:
+        try:
+            exchange = ccxt.binance(_ccxt_config())
+            raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            df = pd.DataFrame(raw, columns=["ts","open","high","low","close","volume"])
+            df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
+            df = df.set_index("ts")
+            df.attrs["data_source"] = "binance_ccxt"
+            return df
+        except Exception as e:
+            _LAST_FETCH_DIAGNOSTIC = _diagnose_ccxt_error(e)
+            log.error("CCXT fetch_ohlcv error for %s: %s", symbol, _LAST_FETCH_DIAGNOSTIC)
+
     try:
-        exchange = ccxt.binance({"enableRateLimit": True})
-        raw = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(raw, columns=["ts","open","high","low","close","volume"])
-        df["ts"] = pd.to_datetime(df["ts"], unit="ms", utc=True)
-        df = df.set_index("ts")
+        import yfinance as yf
+        interval, period = _timeframe_to_yf_interval(timeframe)
+        ticker = _ticker_for_yfinance(symbol)
+        data = yf.download(
+            ticker,
+            period=period,
+            interval=interval,
+            progress=False,
+            auto_adjust=False,
+            threads=False,
+        )
+        if data is None or data.empty:
+            _LAST_FETCH_DIAGNOSTIC += f"; yfinance_empty:{ticker}"
+            return None
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
+        data = data.rename(
+            columns={
+                "Open": "open",
+                "High": "high",
+                "Low": "low",
+                "Close": "close",
+                "Volume": "volume",
+            }
+        )
+        df = data[["open", "high", "low", "close", "volume"]].dropna().tail(limit).copy()
+        df.index = pd.to_datetime(df.index, utc=True)
+        df.attrs["data_source"] = f"yfinance:{ticker}"
+        log.warning("Using yfinance fallback for market regime: %s (%s)", symbol, ticker)
         return df
     except Exception as e:
-        log.error(f"CCXT fetch_ohlcv error for {symbol}: {e}")
+        _LAST_FETCH_DIAGNOSTIC += f"; yfinance_fallback_failed:{type(e).__name__}:{str(e)[:160]}"
+        log.error("Market regime fallback failed for %s: %s", symbol, _LAST_FETCH_DIAGNOSTIC)
+        return None
+
+
+def _load_cached_regime(symbol: str, max_age_hours: float = 6) -> dict | None:
+    try:
+        from db_v2 import get_conn
+        with get_conn() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM market_regimes
+                WHERE symbol = ?
+                ORDER BY timestamp DESC LIMIT 1
+                """,
+                (symbol,),
+            ).fetchone()
+        if not row:
+            return None
+        data = dict(row)
+        ts = datetime.fromisoformat(str(data["timestamp"]).replace("Z", "+00:00"))
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if datetime.now(timezone.utc) - ts > timedelta(hours=max_age_hours):
+            return None
+        return {
+            "regime": data["regime"],
+            "reason": f"using_cached_regime_after_fetch_failed:{_LAST_FETCH_DIAGNOSTIC}",
+            "adx": data.get("adx"),
+            "atr": data.get("atr"),
+            "atr_pct": data.get("atr_pct"),
+            "ema_fast": data.get("ema_fast"),
+            "ema_slow": data.get("ema_slow"),
+            "ema_aligned": bool(data.get("ema_aligned")),
+            "volume_zscore": data.get("volume_zscore"),
+            "close_price": data.get("close_price"),
+            "data_source": "cached_db",
+        }
+    except Exception as exc:
+        log.warning("Could not load cached regime for %s: %s", symbol, exc)
         return None
 
 
@@ -194,10 +375,16 @@ def get_current_regime(symbol: str, timeframe: str = "1h") -> dict:
     """
     df = fetch_ohlcv(symbol, timeframe, limit=220)
     if df is None:
-        return {"regime": "UNKNOWN", "reason": "fetch_failed"}
+        cached = _load_cached_regime(symbol)
+        if cached:
+            return cached
+        return {"regime": "UNKNOWN", "reason": _LAST_FETCH_DIAGNOSTIC or "fetch_failed"}
 
     df = compute_indicators(df)
     result = classify_regime(df)
+    result["data_source"] = df.attrs.get("data_source", "unknown")
+    if result["reason"]:
+        result["reason"] = f"{result['reason']} | source={result['data_source']}"
 
     # Lưu vào DB
     try:

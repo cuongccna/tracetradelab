@@ -15,6 +15,7 @@ import os, sys, json, logging, sqlite3
 import httpx
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from typing import Any
 
 DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
 TRACE_ROOT = Path(os.getenv("TRACE_ROOT", str(DEFAULT_TRACE_ROOT)))
@@ -61,6 +62,12 @@ def _load_ft_config() -> tuple[str, str, str]:
     return _url, _user, _pass
 
 FREQTRADE_URL, FREQTRADE_USER, FREQTRADE_PASS = _load_ft_config()
+AUTO_ADAPTIVE_RISK = os.getenv("TRACE_AUTO_ADAPTIVE_RISK", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -225,6 +232,104 @@ def _normalize_pair(pair: str) -> str:
     return (pair or "").split(":", 1)[0].strip()
 
 
+def _load_local_runtime_config() -> dict:
+    try:
+        return json.loads(FREQTRADE_CONFIG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _configured_symbols(config: dict | None = None) -> list[str]:
+    cfg = config or _load_local_runtime_config()
+    pairs = (cfg.get("exchange") or {}).get("pair_whitelist") or []
+    symbols = []
+    for pair in pairs:
+        symbol = _normalize_pair(str(pair))
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols or ["BTC/USDT"]
+
+
+def _filter_symbol_items(items: Any, symbol: str) -> list[dict]:
+    if not isinstance(items, list):
+        return []
+    return [
+        item for item in items
+        if isinstance(item, dict)
+        and _normalize_pair(str(item.get("pair") or item.get("symbol") or "")) == symbol
+    ]
+
+
+def _record_outback_snapshot(symbols: list[str], all_trades: list[dict]) -> list[dict]:
+    """Persist current Freqtrade state as DB-backed outback telemetry per symbol."""
+    try:
+        from adaptive_risk import record_outback_payload
+    except Exception as exc:
+        log.warning("Outback snapshot skipped: adaptive_risk unavailable: %s", exc)
+        return []
+
+    cfg = _load_local_runtime_config()
+    live_cfg = _ft_get("/show_config")
+    status = _ft_get("/status")
+    profit = _ft_get("/profit")
+    if not isinstance(live_cfg, dict):
+        live_cfg = {}
+    market = (
+        live_cfg.get("trading_mode")
+        or live_cfg.get("trading_mode.value")
+        or cfg.get("trading_mode")
+        or "futures"
+    )
+    timeframe = live_cfg.get("timeframe") or cfg.get("timeframe") or "1h"
+    dry_run_wallet = live_cfg.get("dry_run_wallet") or cfg.get("dry_run_wallet")
+    items = []
+    for symbol in symbols:
+        payload = {
+            "source": "feedback-collector",
+            "symbol": symbol,
+            "market": str(market).lower(),
+            "timeframe": timeframe,
+            "dry_run_wallet": dry_run_wallet,
+            "open_trades": _filter_symbol_items(status, symbol),
+            "profit_summary": profit if isinstance(profit, dict) else {},
+            "trade_history": _filter_symbol_items(all_trades, symbol),
+            "raw_live_config": live_cfg,
+        }
+        try:
+            items.append(record_outback_payload(payload))
+        except Exception as exc:
+            log.warning("Outback snapshot failed for %s: %s", symbol, exc)
+    return items
+
+
+def _run_auto_adaptive(symbols: list[str]) -> list[dict]:
+    if not AUTO_ADAPTIVE_RISK:
+        return []
+    try:
+        from adaptive_risk import run_adaptive_workflow
+    except Exception as exc:
+        log.warning("Auto adaptive skipped: adaptive_risk unavailable: %s", exc)
+        return []
+
+    cfg = _load_local_runtime_config()
+    market = str(cfg.get("trading_mode") or "futures").lower()
+    proposals = []
+    for symbol in symbols:
+        try:
+            result = run_adaptive_workflow(symbol=symbol, market=market)
+            proposals.append(result)
+            log.info(
+                "Auto adaptive proposal #%s for %s/%s: %s",
+                result.get("id"),
+                symbol,
+                market,
+                result.get("arbitration", {}).get("safety_status"),
+            )
+        except Exception as exc:
+            log.warning("Auto adaptive failed for %s: %s", symbol, exc)
+    return proposals
+
+
 def _find_matching_signal(pair: str, trade_open_dt: datetime) -> dict | None:
     """
     Look for the entry signal in DB that:
@@ -383,9 +488,12 @@ def run_feedback_collection():
     else:
         all_trades = []
 
+    symbols = _configured_symbols()
+    outback_items = _record_outback_snapshot(symbols, all_trades)
+
     if not all_trades:
         log.info("No trades from Freqtrade (offline or empty)")
-        return
+        return {"recorded": 0, "outback": outback_items, "adaptive": []}
 
     closed = [t for t in all_trades if not t.get("is_open", True)]
     log.info(f"Processing {len(closed)} closed FT trades...")
@@ -416,7 +524,14 @@ def run_feedback_collection():
             _record_outcome(signal_row, ft_trade)
             recorded += 1
 
-    log.info(f"=== Feedback collection done: {recorded} new outcomes recorded ===")
+    adaptive = _run_auto_adaptive(symbols) if recorded > 0 else []
+    log.info(
+        "=== Feedback collection done: %s new outcomes, %s outback snapshots, %s adaptive proposals ===",
+        recorded,
+        len(outback_items),
+        len(adaptive),
+    )
+    return {"recorded": recorded, "outback": outback_items, "adaptive": adaptive}
 
 
 # ═══════════════════════════════════════════════════════════════════

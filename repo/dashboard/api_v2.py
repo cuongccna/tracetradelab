@@ -401,6 +401,28 @@ def _load_freqtrade_config() -> dict:
     except json.JSONDecodeError as exc:
         raise HTTPException(500, f"Invalid Freqtrade config JSON: {exc}") from exc
 
+def _normalize_freqtrade_pair(pair: str) -> str:
+    return (pair or "").split(":", 1)[0].strip()
+
+def _configured_freqtrade_symbols(config: dict | None = None) -> list[str]:
+    cfg = config or _load_freqtrade_config()
+    pairs = cfg.get("exchange", {}).get("pair_whitelist", [])
+    symbols: list[str] = []
+    for pair in pairs:
+        symbol = _normalize_freqtrade_pair(str(pair))
+        if symbol and symbol not in symbols:
+            symbols.append(symbol)
+    return symbols or ["BTC/USDT"]
+
+def _filter_freqtrade_items_by_symbol(items: Any, symbol: str) -> list[dict[str, Any]]:
+    if not isinstance(items, list):
+        return []
+    return [
+        item for item in items
+        if isinstance(item, dict)
+        and _normalize_freqtrade_pair(str(item.get("pair") or item.get("symbol") or "")) == symbol
+    ]
+
 def _write_freqtrade_config(config: dict) -> str:
     FREQTRADE_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     backup = FREQTRADE_CONFIG_PATH.with_suffix(
@@ -678,27 +700,33 @@ async def ingest_freqtrade_outback(payload: dict[str, Any]):
 
 
 @app.post("/api/outback/freqtrade/collect")
-async def collect_freqtrade_outback():
+async def collect_freqtrade_outback(symbol: Optional[str] = None):
     """Pull current Freqtrade state and store it as an outback snapshot."""
     if not ADAPTIVE_OK:
         return {"error": "adaptive_risk not available"}
+    local = _load_freqtrade_config()
     live = await _freqtrade_live_config()
     status = await ft_status()
     profit = await ft_profit()
     trades = await ft_trades(limit=100)
-    payload = {
-        "source": "freqtrade-pull",
-        "symbol": "BTC/USDT",
-        "market": live.get("trading_mode") or live.get("trading_mode.value") or "futures",
-        "timeframe": live.get("timeframe") or "1h",
-        "dry_run_wallet": live.get("dry_run_wallet") or _load_freqtrade_config().get("dry_run_wallet"),
-        "open_trades": status if isinstance(status, list) else [],
-        "profit_summary": profit if isinstance(profit, dict) else {},
-        "trade_history": trades.get("trades", []) if isinstance(trades, dict) else [],
-        "raw_live_config": live,
-    }
-    item = record_outback_payload(payload)
-    return {"status": "recorded", "outback": item}
+    all_trades = trades.get("trades", []) if isinstance(trades, dict) else []
+    symbols = [symbol.replace("%2F", "/")] if symbol else _configured_freqtrade_symbols(local)
+    market = live.get("trading_mode") or live.get("trading_mode.value") or local.get("trading_mode") or "futures"
+    items = []
+    for sym in symbols:
+        payload = {
+            "source": "freqtrade-pull",
+            "symbol": sym,
+            "market": str(market).lower(),
+            "timeframe": live.get("timeframe") or local.get("timeframe") or "1h",
+            "dry_run_wallet": live.get("dry_run_wallet") or local.get("dry_run_wallet"),
+            "open_trades": _filter_freqtrade_items_by_symbol(status, sym),
+            "profit_summary": profit if isinstance(profit, dict) else {},
+            "trade_history": _filter_freqtrade_items_by_symbol(all_trades, sym),
+            "raw_live_config": live,
+        }
+        items.append(record_outback_payload(payload))
+    return {"status": "recorded", "outback": items[0] if items else None, "items": items}
 
 
 @app.get("/api/adaptive/risk")

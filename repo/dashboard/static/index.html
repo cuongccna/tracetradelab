@@ -1311,25 +1311,28 @@ async function loadAdaptive(){
 }
 
 async function collectOutback(){
+  const symbol = ($('run-symbol')?.value || 'BTC/USDT');
   try{
-    const r = await fetch(API+'/api/outback/freqtrade/collect',{method:'POST'});
+    const r = await fetch(API+'/api/outback/freqtrade/collect?symbol='+encodeURIComponent(symbol),{method:'POST'});
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || JSON.stringify(d));
-    toast('↺ Đã thu outback');
+    toast('↺ Đã thu outback ('+symbol+')');
     await loadAdaptive();
   }catch(e){ toast('⚠ Thu outback lỗi: '+e.message, 5000); }
 }
 
 async function runAdaptive(applyConfig){
+  const symbol = ($('run-symbol')?.value || 'BTC/USDT');
+  const market = (S.freqtrade?.trading_mode || S.freqtrade?.live_trading_mode || 'futures');
   const msg = applyConfig
-    ? 'Chạy adaptive và áp dụng vào config dry-run?'
-    : 'Chạy adaptive để tạo proposal?';
+    ? `Chạy adaptive cho ${symbol}/${market} và áp dụng vào config dry-run?`
+    : `Chạy adaptive cho ${symbol}/${market} để tạo proposal?`;
   if(!confirm(msg)) return;
   try{
     const r = await fetch(API+'/api/adaptive/risk/run',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({symbol:'BTC/USDT',market:'futures',apply_config:applyConfig,restart:false})
+      body:JSON.stringify({symbol,market,apply_config:applyConfig,restart:false})
     });
     const d = await r.json();
     if(!r.ok || d.error) throw new Error(d.error || JSON.stringify(d.detail||d));

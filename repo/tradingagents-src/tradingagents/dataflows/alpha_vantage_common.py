@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from io import StringIO
 
+from .proxy import requests_kwargs
+
 API_BASE_URL = "https://www.alphavantage.co/query"
 
 def get_api_key() -> str:
@@ -63,7 +65,7 @@ def _make_api_request(function_name: str, params: dict) -> dict | str:
         # Remove entitlement if it's None or empty
         api_params.pop("entitlement", None)
     
-    response = requests.get(API_BASE_URL, params=api_params)
+    response = requests.get(API_BASE_URL, params=api_params, **requests_kwargs())
     response.raise_for_status()
 
     response_text = response.text

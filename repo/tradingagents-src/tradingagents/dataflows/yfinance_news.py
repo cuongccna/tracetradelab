@@ -8,6 +8,9 @@ from dateutil.relativedelta import relativedelta
 
 from .config import get_config
 from .stockstats_utils import yf_retry
+from .proxy import apply_proxy_env
+
+apply_proxy_env()
 
 
 def _extract_article_data(article: dict) -> dict:

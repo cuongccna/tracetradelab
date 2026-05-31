@@ -124,6 +124,64 @@ RUN_INTERVAL_FILE = Path(
 _RUN_LOCK_HANDLE = None
 
 
+def _append_current_market_context(symbol: str, past_context: str, regime_data: dict | None) -> str:
+    """Add DB-backed current market context to the prompt memory block."""
+    sections = []
+    if past_context:
+        sections.append(past_context)
+    if regime_data and regime_data.get("regime") and regime_data.get("regime") != "UNKNOWN":
+        sections.append(
+            "Current market regime from DB/market data:\n"
+            f"  {symbol}: {regime_data.get('regime')} | {regime_data.get('reason', '')}\n"
+            f"  ADX={regime_data.get('adx')} ATR%={regime_data.get('atr_pct')} "
+            f"close={regime_data.get('close_price')} source={regime_data.get('data_source', 'unknown')}"
+        )
+    try:
+        from db_v2 import get_conn
+        with get_conn() as conn:
+            outback = conn.execute(
+                """
+                SELECT market, timeframe, current_balance, drawdown_pct,
+                       max_drawdown_pct, volatility_atr_pct, total_profit_pct,
+                       open_trade_count, closed_trade_count, created_at
+                FROM freqtrade_outback_events
+                WHERE symbol=?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (symbol,),
+            ).fetchone()
+            proposal = conn.execute(
+                """
+                SELECT safety_status, sample_size, final_config, created_at
+                FROM adaptive_risk_proposals
+                WHERE symbol=?
+                ORDER BY created_at DESC LIMIT 1
+                """,
+                (symbol,),
+            ).fetchone()
+        if outback:
+            sections.append(
+                "Latest Freqtrade outback snapshot from DB:\n"
+                f"  market={outback['market']} timeframe={outback['timeframe']} "
+                f"balance={outback['current_balance']} drawdown={outback['drawdown_pct']}% "
+                f"max_drawdown={outback['max_drawdown_pct']}% atr={outback['volatility_atr_pct']}% "
+                f"profit={outback['total_profit_pct']}% open_trades={outback['open_trade_count']} "
+                f"closed_trades={outback['closed_trade_count']} captured_at={outback['created_at']}"
+            )
+        if proposal:
+            final = json.loads(proposal["final_config"] or "{}")
+            sections.append(
+                "Latest adaptive risk debate result from DB:\n"
+                f"  status={proposal['safety_status']} sample_size={proposal['sample_size']} "
+                f"stake_amount={final.get('stake_amount')} stoploss_pct={final.get('stoploss_pct')} "
+                f"take_profit_pct={final.get('take_profit_pct')} max_open_trades={final.get('max_open_trades')} "
+                f"created_at={proposal['created_at']}"
+            )
+    except Exception as exc:
+        log.warning("Could not append DB market context: %s", exc)
+    return "\n\n".join(sections)
+
+
 def _defang_late_trade_signal(signal: dict, elapsed_minutes: float, run_id: int) -> dict:
     """Convert late trade signals to HOLD before they reach Freqtrade."""
     if signal.get("action") not in ("BUY", "SELL"):
@@ -460,7 +518,14 @@ def main():
     if FEEDBACK_AVAILABLE and not args.skip_feedback:
         log.info("Collecting Freqtrade feedback before analysis...")
         try:
-            run_feedback_collection()
+            feedback_summary = run_feedback_collection()
+            if isinstance(feedback_summary, dict):
+                log.info(
+                    "Feedback summary: %s outcomes, %s outback snapshots, %s adaptive proposals",
+                    feedback_summary.get("recorded", 0),
+                    len(feedback_summary.get("outback") or []),
+                    len(feedback_summary.get("adaptive") or []),
+                )
         except Exception as e:
             log.warning(f"Feedback collection failed (non-fatal): {e}")
 
@@ -475,13 +540,22 @@ def main():
 
     # ── BƯỚC 2.5: Tính market regime trước khi run ───────────────
     current_regime = None
+    regime_data = None
     if REGIME_OK:
         try:
             regime_data = get_current_regime(symbol)
-            current_regime = regime_data.get("regime", "UNKNOWN")
-            log.info(f"Market regime: {current_regime}")
+            regime_value = regime_data.get("regime")
+            regime_reason = regime_data.get("reason", "")
+            if regime_value == "UNKNOWN":
+                log.warning(f"Market regime UNKNOWN: {regime_reason}")
+                current_regime = None  # treat UNKNOWN as not-available so Telegram shows N/A
+            else:
+                current_regime = regime_value
+                log.info(f"Market regime: {current_regime} ({regime_reason})")
         except Exception as e:
             log.warning(f"Regime computation failed: {e}")
+
+    past_context = _append_current_market_context(symbol, past_context, regime_data)
 
     # ── BƯỚC 3: Chạy TradingAgents với context ────────────────────
     log.info(f"=== Starting analysis: {symbol} on {trade_date} ===")

@@ -18,7 +18,9 @@ import time
 from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from urllib.request import Request
+
+from .proxy import urlopen_with_proxy
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +49,7 @@ def _fetch_subreddit(
     url = _API.format(sub=sub, qs=qs)
     req = Request(url, headers={"User-Agent": _UA, "Accept": "application/json"})
     try:
-        with urlopen(req, timeout=timeout) as resp:
+        with urlopen_with_proxy(req, timeout=timeout) as resp:
             payload = json.loads(resp.read())
     except (HTTPError, URLError, json.JSONDecodeError, TimeoutError) as exc:
         logger.warning("Reddit fetch failed for r/%s · %s: %s", sub, ticker, exc)
