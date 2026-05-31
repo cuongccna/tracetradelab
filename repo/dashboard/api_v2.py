@@ -526,11 +526,11 @@ async def ft_config_restart(payload: FreqtradeRestartRequest):
 def _check_agent_running() -> dict:
     """Return {running: bool, reason: str}.
     Uses two signals:
-    1. flock non-blocking try on logs/runner.lock  (cron lock mechanism)
+    1. flock non-blocking try on logs/agent_runner.lock  (same lock agent_runner_v2.py uses)
     2. pgrep scan for agent_runner_v2.py process
     """
     import fcntl
-    lock_path = LOG_DIR / "runner.lock"
+    lock_path = LOG_DIR / "agent_runner.lock"  # must match AGENT_LOCK_FILE in agent_runner_v2.py
     # Signal 1 — try to acquire the same flock the cron script uses
     try:
         fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o664)
@@ -539,7 +539,7 @@ def _check_agent_running() -> dict:
             fcntl.flock(fd, fcntl.LOCK_UN)  # release immediately — nobody holds it
         except BlockingIOError:
             os.close(fd)
-            return {"running": True, "reason": "runner.lock đang bị giữ (cron agent đang chạy)"}
+            return {"running": True, "reason": "agent_runner.lock đang bị giữ (agent đang chạy)"}
         os.close(fd)
     except OSError:
         pass  # can't check lock — fall through to process scan
@@ -762,7 +762,8 @@ def _bg_run(cmd: str, log_file: str):
 
 @app.post("/api/trigger-run")
 async def trigger_run(background_tasks: BackgroundTasks, symbol: str = "BTC/USDT"):
-    cmd = f"{VENV_PYTHON} {DASHBOARD_DIR}/agent_runner_v2.py --symbol '{symbol}'"
+    # --force bypasses the MIN_RUN_INTERVAL_MINUTES guard so manual runs always execute
+    cmd = f"{VENV_PYTHON} {DASHBOARD_DIR}/agent_runner_v2.py --symbol '{symbol}' --force"
     background_tasks.add_task(_bg_run, cmd, str(LOG_DIR / "manual_run.log"))
     return {"status": "triggered", "symbol": symbol}
 
