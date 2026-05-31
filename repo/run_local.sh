@@ -13,7 +13,13 @@
 set -euo pipefail
 
 ROOT="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-VENV="${ROOT}/tradingagents-src/.venv"
+if [[ -x "${ROOT}/tradingagents-src/.venv/bin/python" ]]; then
+  VENV="${ROOT}/tradingagents-src/.venv"
+elif [[ -x "${ROOT}/.venv/bin/python" ]]; then
+  VENV="${ROOT}/.venv"
+else
+  VENV="${ROOT}/tradingagents-src/.venv"
+fi
 PYTHON="${VENV}/bin/python"
 DASHBOARD="${ROOT}/dashboard"
 LOG_DIR="${ROOT}/logs"
@@ -21,7 +27,9 @@ LOG_DIR="${ROOT}/logs"
 # Kiểm tra .venv
 if [[ ! -x "${PYTHON}" ]]; then
   echo "❌ Không tìm thấy Python venv tại: ${VENV}"
-  echo "   Chạy: cd tradingagents-src && python3 -m venv .venv && .venv/bin/pip install -e ."
+  echo "   Chạy một trong hai cách:"
+  echo "   1) cd ${ROOT}/tradingagents-src && python3 -m venv .venv && .venv/bin/pip install -e ."
+  echo "   2) cd ${ROOT} && python3 -m venv .venv && .venv/bin/pip install -e tradingagents-src"
   exit 1
 fi
 

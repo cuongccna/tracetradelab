@@ -18,6 +18,16 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
+DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
+TRADINGAGENTS_SRC = Path(os.environ.get("TRADINGAGENTS_SRC", str(DEFAULT_TRACE_ROOT / "tradingagents-src")))
+
+try:
+    import sys as _sys
+    _sys.path.insert(0, str(TRADINGAGENTS_SRC))
+    from tradingagents.dataflows.proxy import urlopen_with_proxy
+except Exception:
+    urlopen_with_proxy = None
+
 # ─── Tự động load .env từ thư mục cha (cho phép cấu hình qua file) ──────────
 try:
     from dotenv import load_dotenv as _load_dotenv
@@ -43,7 +53,6 @@ except ImportError:
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")   # ← Điền token bot
 TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID",   "")   # ← Điền chat ID của bạn
 DASHBOARD_URL      = os.environ.get("DASHBOARD_URL", "http://localhost:8888")  # ← URL public nếu có
-DEFAULT_TRACE_ROOT = Path(__file__).resolve().parents[1]
 DB_PATH            = Path(os.environ.get("TRACE_DB_PATH", str(DEFAULT_TRACE_ROOT / "dashboard" / "tracetrader.db")))
 
 ACTION_EMOJI = {"BUY": "📈", "SELL": "📉", "HOLD": "⏸️", "EXIT": "🚪"}
@@ -68,7 +77,8 @@ def _send(text: str) -> bool:
     req = urllib.request.Request(url, data=payload,
                                   headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        opener = urlopen_with_proxy if urlopen_with_proxy else urllib.request.urlopen
+        with opener(req, timeout=15) as resp:
             result = json.loads(resp.read())
             if result.get("ok"):
                 log.info("[Telegram] Tin nhắn đã gửi")
